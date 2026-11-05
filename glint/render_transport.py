@@ -65,6 +65,8 @@ def main() -> None:
             ("interface", output.interface.render),
             ("diffuse_weighted", output.dif_render),
             ("reflection_weighted", output.ref_render),
+            ("shared_reflection_weighted", output.shared_ref_render),
+            ("extra_reflection_weighted", output.extra_ref_render),
             ("transmission_weighted", output.trans_render),
         ):
             _write_image(args.components_dir / f"{name}.png", image)

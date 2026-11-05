@@ -42,6 +42,7 @@ class TorchSurfelTracer(nn.Module):
         rays: RayBundle,
         *,
         background: Tensor,
+        source_surface: Tensor | None = None,
     ) -> TraceResult:
         height, width, _ = rays.origins.shape
         origins = rays.origins.reshape(-1, 3)
@@ -84,6 +85,29 @@ class TorchSurfelTracer(nn.Module):
             -0.5 * (u.square() + v.square())
         )
         alpha = alpha.clamp(max=self.max_alpha)
+        if source_surface is not None:
+            if source_surface.shape != (height, width, 16) or source_surface.device != origins.device:
+                raise ValueError("source_surface must have shape [H,W,16] on the ray device")
+            f = source_surface.detach().reshape(n_rays, 16)
+            with torch.no_grad():
+                camera = f[:, None, :3]
+                incoming = f[:, None, 3:6]
+                launch = f[:, None, 6:9]
+                source_n = f[:, None, 9:12]
+                denom = (incoming * normals).sum(-1)
+                safe = torch.where(denom.abs() > 1e-6, denom, torch.ones_like(denom))
+                t = ((means[None] - camera) * normals).sum(-1) / safe
+                launch_t = ((launch-camera)*incoming).sum(-1)
+                delta = camera + t[...,None]*incoming - means[None]
+                su = (delta*tangent_u[None]).sum(-1)/scales[None,:,0]
+                sv = (delta*tangent_v[None]).sum(-1)/scales[None,:,1]
+                source_alpha = gaussians.get_opacity.reshape(1,-1)*torch.exp(-.5*(su.square()+sv.square()))
+                excluded = ((points-launch).norm(dim=-1) <= f[:,13:14]) & (
+                    (normals*source_n).sum(-1).abs() >= f[:,14:15]) & (
+                    denom.abs() > 1e-6) & (t > 0) & (
+                    (t-launch_t).abs() <= f[:,12:13]) & (su.abs() <= 3) & (sv.abs() <= 3) & (
+                    source_alpha >= f[:,15:16])
+            valid = valid & ~excluded
         alpha = torch.where(valid & (alpha >= self.alpha_min), alpha, 0.0)
 
         sort_distance = torch.where(

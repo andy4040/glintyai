@@ -8,7 +8,7 @@ model_cfg:
         trans_env_densify_grad_threshold: 0.0002
     supervisor_cfg:
         use_normal_type: "diffren"
-        perc_loss_start_iter: 45000
+        perc_loss_start_iter: 30000
 
 runner_cfg:
     epochs: 120

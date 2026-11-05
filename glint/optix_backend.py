@@ -101,6 +101,7 @@ class OptixSurfelTracer(nn.Module):
         rays: RayBundle,
         *,
         background: Tensor,
+        source_surface: Tensor | None = None,
     ) -> TraceResult:
         means = gaussians.get_xyz.contiguous()
         scales = gaussians.get_scaling[..., :2].contiguous()
@@ -112,6 +113,15 @@ class OptixSurfelTracer(nn.Module):
 
         device, dtype = means.device, means.dtype
         height, width, _ = rays.origins.shape
+        source_kwargs = {}
+        if source_surface is not None:
+            if "source_surface" not in self._settings_type._fields:
+                raise RuntimeError("Rebuild the source-filter OptiX extension in an isolated environment")
+            if self.sigma_extent != 3.0:
+                raise ValueError("Source filter currently requires sigma_extent=3")
+            if source_surface.shape != (height, width, 16) or source_surface.device != device:
+                raise ValueError("source_surface must have shape [H,W,16] on the ray device")
+            source_kwargs["source_surface"] = source_surface.detach().to(dtype=torch.float32).contiguous()
         settings = self._settings_type(
             image_height=height,
             image_width=width,
@@ -127,6 +137,7 @@ class OptixSurfelTracer(nn.Module):
             debug=False,
             max_trace_depth=0,
             specular_threshold=0.0,
+            **source_kwargs,
         )
         grads3d = torch.zeros_like(means, requires_grad=True)
         others = None

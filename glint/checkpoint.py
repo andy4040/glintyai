@@ -155,6 +155,14 @@ class GlintCheckpoint:
     env_bg_color: Tensor
     trans_env_bg_color: Tensor
     epoch: Optional[int]
+    shared_reflection: bool = False
+    separate_reflection_enabled: bool = True
+    reflection_ray_offset: float = 1e-4
+    render_stage: str | None = None
+    source_surface_filter: bool = False
+    source_depth_tolerance: float = 0.005
+    source_max_distance: float = 0.02
+    source_normal_cosine: float = 0.95
 
 
 def load_glint_checkpoint(
@@ -198,6 +206,19 @@ def load_glint_checkpoint(
             raise KeyError(f"GLINT checkpoint is missing {key}")
         return state[key].detach().clone().to(device)
 
+    schedule = payload.get("schedule", {})
+    shared_start = schedule.get("shared_reflection_start")
+    step = int(payload.get("step", payload.get("epoch", 0)))
+    render_stage = None
+    if shared_start is not None:
+        if step < schedule.get("transmission_start", 1000):
+            render_stage = "interface"
+        elif step < shared_start:
+            render_stage = "transmission"
+        elif step < schedule.get("reflection_start", 3000):
+            render_stage = "shared_reflection"
+        else:
+            render_stage = "full"
     return GlintCheckpoint(
         pcd=build("pcd", "interface"),
         env=build("env", "reflection"),
@@ -206,4 +227,12 @@ def load_glint_checkpoint(
         env_bg_color=background("sampler.env_bg_color"),
         trans_env_bg_color=background("sampler.trans_env_bg_color"),
         epoch=payload.get("epoch") if isinstance(payload, Mapping) else None,
+        shared_reflection=shared_start is not None and step >= shared_start,
+        separate_reflection_enabled=shared_start is None or step >= schedule.get("reflection_start", 3000),
+        reflection_ray_offset=float(schedule.get("reflection_ray_offset", 1e-4)),
+        render_stage=render_stage,
+        source_surface_filter=bool(schedule.get("source_surface_filter", False)),
+        source_depth_tolerance=float(schedule.get("source_depth_tolerance", 0.005)),
+        source_max_distance=float(schedule.get("source_max_distance", 0.02)),
+        source_normal_cosine=float(schedule.get("source_normal_cosine", 0.95)),
     )

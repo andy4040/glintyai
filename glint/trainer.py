@@ -1668,7 +1668,7 @@ class GlintTrainer:
             self._update_sh_degree(step)
             output = render_glint_transport(
                 sample.camera,
-                self.model.as_checkpoint(step),
+                self.model.as_checkpoint(step, schedule=self.schedule),
                 self.tracer if stage != "interface" else None,
                 stage=stage,
                 # Match released GLINT: transport losses may update interface
@@ -1714,9 +1714,9 @@ class GlintTrainer:
                     step
                 )
             if "reflection" in active_sets:
-                self.refiners["reflection"].accumulate_trace(output.reflection_trace)
+                self.refiners["reflection"].accumulate_trace(output.extra_reflection_trace)
                 self.refiners["reflection"].accumulate_trace(
-                    output.secondary_reflection_trace
+                    output.secondary_extra_reflection_trace
                 )
                 refinement_stats["reflection"] = self.refiners["reflection"].step(step)
 

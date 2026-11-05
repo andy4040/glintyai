@@ -22,7 +22,7 @@ from glint.checkpoint import (
 )
 
 
-TrainingStage = Literal["interface", "transmission", "full"]
+TrainingStage = Literal["interface", "transmission", "shared_reflection", "full"]
 _SH_C0 = 0.28209479177387814
 
 
@@ -33,6 +33,12 @@ class GlintStageSchedule:
     transmission_start: int = 1_000
     reflection_start: int = 3_000
     interface_freeze: int | None = None
+    shared_reflection_start: int | None = None
+    reflection_ray_offset: float = 1e-4
+    source_surface_filter: bool = False
+    source_depth_tolerance: float = 0.005
+    source_max_distance: float = 0.02
+    source_normal_cosine: float = 0.95
 
     def __post_init__(self) -> None:
         if self.transmission_start < 0:
@@ -41,11 +47,25 @@ class GlintStageSchedule:
             raise ValueError("reflection_start must not precede transmission_start")
         if self.interface_freeze is not None and self.interface_freeze < 0:
             raise ValueError("interface_freeze must be non-negative or None")
+        if self.shared_reflection_start is not None:
+            if not self.transmission_start <= self.shared_reflection_start < self.reflection_start:
+                raise ValueError("Require transmission_start <= shared_reflection_start < reflection_start")
+        if not np.isfinite(self.reflection_ray_offset) or self.reflection_ray_offset <= 0:
+            raise ValueError("reflection_ray_offset must be finite and positive")
+        for value in (self.source_depth_tolerance, self.source_max_distance):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError("Source depth tolerance and max distance must be finite and positive")
+        if not 0 < self.source_normal_cosine <= 1:
+            raise ValueError("source_normal_cosine must be in (0, 1]")
+        if self.source_surface_filter and self.shared_reflection_start is None:
+            raise ValueError("Source filtering requires shared reflection")
 
     def stage(self, step: int) -> TrainingStage:
         if step < self.transmission_start:
             return "interface"
         if step < self.reflection_start:
+            if self.shared_reflection_start is not None and step >= self.shared_reflection_start:
+                return "shared_reflection"
             return "transmission"
         return "full"
 
@@ -225,7 +245,7 @@ class GlintTrainingModel(nn.Module):
             ),
         )
 
-    def as_checkpoint(self, step: int | None = None) -> GlintCheckpoint:
+    def as_checkpoint(self, step: int | None = None, *, schedule: GlintStageSchedule | None = None) -> GlintCheckpoint:
         return GlintCheckpoint(
             pcd=self.interface,
             env=self.reflection,
@@ -234,6 +254,14 @@ class GlintTrainingModel(nn.Module):
             env_bg_color=self.reflection_background,
             trans_env_bg_color=self.transmission_background,
             epoch=step,
+            shared_reflection=(schedule is not None and schedule.shared_reflection_start is not None
+                               and step is not None and step >= schedule.shared_reflection_start),
+            separate_reflection_enabled=(schedule is None or step is None or step >= schedule.reflection_start),
+            reflection_ray_offset=schedule.reflection_ray_offset if schedule else 1e-4,
+            source_surface_filter=schedule.source_surface_filter if schedule else False,
+            source_depth_tolerance=schedule.source_depth_tolerance if schedule else 0.005,
+            source_max_distance=schedule.source_max_distance if schedule else 0.02,
+            source_normal_cosine=schedule.source_normal_cosine if schedule else 0.95,
         )
 
     def legacy_state_dict(self) -> dict[str, Tensor]:

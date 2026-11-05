@@ -30,5 +30,12 @@ cmake-build-*/
 # Local datasets, outputs, and logs
 data/
 results/
+run-logs/
+setup-logs/
+verification/
+artifacts/
+*.pt
+*.pth
+*.bin
 *.log
 *.dump

@@ -4,8 +4,24 @@
 [![Project page](https://img.shields.io/badge/GLINT-Project%20Page-blue.svg)](https://youngju-na.github.io/GLINT)
 [![Dataset](https://img.shields.io/badge/Dataset-Download-green.svg)](https://drive.google.com/drive/folders/1626l8RXKLpCqRhGLdGSYhcumm3HjOnYg?usp=sharing)
 
-Official implementation of **GLINT: Modeling Scene-Scale Transparency via
-Gaussian Radiance Transport**.
+Research fork of **GLINT: Modeling Scene-Scale Transparency via
+Gaussian Radiance Transport**, based on upstream commit
+`a20591b20ef3365c230e3c95f749e65c498c68c4`.
+
+This fork adds sequential shared-interface and separate-environment reflection,
+an optional source-surface self-hit filter, and a 40,000-step 3D-FRONT-T schedule
+with interface geometry freezing at 20,000 and LPIPS enabled after 30,000.
+See [the shared-reflection training section](#optional-shared-interface-reflection-curriculum).
+The original project attribution and documentation follow below.
+
+Validation: 79 regression tests passed on RTX 3090, plus GPU stage-transition,
+checkpoint resume/evaluation, and LPIPS forward/backward checks. These verify
+execution, not final reconstruction quality. Source filtering is a geometric
+heuristic; very close parallel surfaces remain ambiguous. Shared-reflection
+hit gradients are not yet included in interface densification statistics, and
+manual resume must repeat `--interface-geometry-freeze 20000` (the supplied
+training script does so). Separate reflection uses background completion rather
+than a depth-sorted union or recursive material transport.
 
 [Youngju Na](https://youngju-na.github.io/)<sup>1,2,*</sup>,
 [Jaeseong Yun](mailto:jaeseong.yun@naverlabs.com)<sup>2</sup>,
@@ -38,11 +54,11 @@ _<sup>1</sup>KAIST, <sup>2</sup>NAVER LABS_
 We tested the code on Linux with Python 3.11, PyTorch 2.9.1+cu126, the CUDA
 12.9 toolkit, and an NVIDIA RTX 4090.
 
-Clone recursively so that the OptiX tracer dependency is present:
+Clone this fork; its modified OptiX tracer and headers are included:
 
 ```bash
-git clone --recursive https://github.com/youngju-na/GLINT.git
-cd GLINT
+git clone https://github.com/andy4040/glintyai.git
+cd glintyai
 ```
 
 Create a separate environment for the gsplat implementation:
@@ -148,6 +164,91 @@ Official view splits and scene hyperparameters are provided under
 provided with `--data-root`; no source or YAML edit is required.
 
 ## Training
+
+### Optional shared-interface reflection curriculum
+
+Enable the new path with both `--shared-reflection-start 3000` and
+`--reflection-start 6000`. Omitting `--shared-reflection-start` preserves the
+original three-stage renderer and optimizer schedule.
+
+```bash
+python -m glint.train \
+  --config configs/exps/glint/3d-front-t/scene_4.yaml \
+  --data-root /path/to/3d-front-t/scene_4 \
+  --output-dir results/shared-reflection/scene_4 \
+  --max-steps 40000 \
+  --interface-geometry-freeze 20000 \
+  --transmission-start 1000 \
+  --shared-reflection-start 3000 \
+  --reflection-start 6000 \
+  --source-surface-filter
+```
+
+The example uses interface-only training until step 1000, interface plus
+transmission until step 3000, shared-interface reflection until step 6000,
+then shared-interface reflection plus the separate reflection set. These
+boundaries are configurable experimental defaults, not tuned results.
+The shared-reflection experiment runs for 40,000 steps (0–39,999), freezing
+interface geometry at step 20,000. Color/material parameters and the other
+Gaussian sets continue training after that boundary. Other loss and refinement
+schedules are unchanged except the 3D-FRONT-T perceptual-loss start, moved to
+30,000. The existing strict `step > perceptual_start` condition activates LPIPS
+at step 30,001 through 39,999; its weight remains 0.05. This is not a proportional
+compression of all schedules.
+Use `DATA_ROOT=/path/to/3d-front-t/scene_4 bash scripts/train_shared_reflection.sh`
+to run this schedule; an optional first argument selects another scene.
+The separate reflection set is allocated at initialization but is neither
+traced nor optimizer-stepped/refined before its activation. The shared set
+continues normal interface optimization; this option does not add a geometry
+freeze or separate color head for the shared reflection path.
+
+Both first-surface reflection and reflection from the transmitted surface use
+the same policy. Rays first query the existing interface set with a black
+background. After the separate path activates, reflection radiance is composed
+as `shared.rgb + (1 - shared.alpha) * separate.rgb`, before applying GLINT's
+existing reflection weights. This explicitly treats the separate set as a
+background completion layer, **not** as a depth-sorted union of interleaved
+surfaces. Shared opacity is coverage, not material transparency; recursive
+transport through glass inside a reflected scene is not added here.
+
+`--reflection-ray-offset` (default `1e-4`, in world units) offsets the ray origin
+along the normalized reflected direction to reduce self-intersections. It may
+need adjustment for different scene scales or inaccurate interface depths.
+LPM, new point allocation rules, and opacity reset changes are not included.
+
+Source-surface filtering (`--source-surface-filter`) rejects shared-scene
+self-hits using a detached per-ray candidate test in **both** OptiX forward and
+backward traversal. Candidates must overlap the original camera pixel's ray
+within the finite surfel footprint, exceed alpha 1/255 there, agree with the
+source normal, and lie near the launch depth. Only intersections near the launch
+position are rejected. Gaussians are never globally deleted; the separate
+reflection set and transmission tracing are not filtered.
+
+This computes geometric source-pixel candidates lazily at intersections rather
+than exporting exact contributor IDs from gsplat. It is a local heuristic, not
+semantic surface segmentation or exact visibility-weight provenance. Parallel
+surfaces closer than the configured tolerance may still be ambiguous; large
+depth errors can exceed the rejection band. Defaults are world-space
+`--source-depth-tolerance 0.005`, `--source-max-distance 0.02`, and normal
+agreement `--source-normal-cosine 0.95`. Adjust for scene scale. Invalid/zero
+source normals cause no rejection. Use `--no-source-surface-filter` for an
+ablation. These settings are saved in the checkpoint and restored on resume.
+
+The native OptiX extension **must be rebuilt** for this feature. Build and run
+in a separate virtual environment when another training process is using the
+old extension; do not overwrite its binaries/PTX in place. The CPU reference
+tracer implements the same filter for regression tests. Supported native
+settings are the GLINT default `sigma_extent=3` and explicit single-bounce
+tracing (`max_trace_depth=0`).
+
+Schedules and the offset are saved in checkpoints. Resume inherits the saved
+schedule unless explicitly overridden by CLI flags. Evaluation and
+`glint.render_transport` automatically use the saved stage for this optional
+mode, so a shared-only checkpoint does not render the untrained separate set.
+`glint.render_transport --components-dir PATH` also writes
+`shared_reflection_weighted.png` and `extra_reflection_weighted.png` for the
+primary reflection path. Their sum is `reflection_weighted.png`; the existing
+secondary reflection output remains separate.
 
 Activate the `splat` environment and run commands from the repository root.
 

@@ -1,3 +1,0 @@
-[submodule "third_party/diff-surfel-tracing"]
-	path = third_party/diff-surfel-tracing
-	url = https://github.com/xbillowy/diff-surfel-tracing.git

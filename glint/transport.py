@@ -64,6 +64,7 @@ class GlintRayTracer(Protocol):
         rays: RayBundle,
         *,
         background: Tensor,
+        source_surface: Tensor | None = None,
     ) -> TraceResult:
         ...
 
@@ -273,12 +274,78 @@ def _flatten_image(value: Tensor) -> Tensor:
     return value.reshape(1, -1, value.shape[-1])
 
 
+def make_source_surface_filter(
+    incoming: RayBundle, launch: RayBundle, normals: Tensor,
+    checkpoint: GlintCheckpoint,
+) -> Tensor | None:
+    """Detached per-pixel geometry for lazy source-surface candidate rejection.
+
+    This recomputes source-pixel footprint membership at each hit; it does not
+    claim exact rasterizer contributor IDs or semantic surface segmentation.
+    """
+    if not checkpoint.source_surface_filter:
+        return None
+    constants = normals.new_tensor([
+        checkpoint.source_depth_tolerance, checkpoint.source_max_distance,
+        checkpoint.source_normal_cosine, 1.0 / 255.0,
+    ]).expand(*normals.shape[:-1], 4)
+    return torch.cat((incoming.origins, F.normalize(incoming.directions, dim=-1),
+                      launch.origins, F.normalize(normals, dim=-1), constants), -1).detach().contiguous()
+
+
+def trace_reflection_paths(
+    checkpoint: GlintCheckpoint,
+    tracer: GlintRayTracer,
+    rays: RayBundle,
+    *,
+    shared: bool,
+    separate: bool,
+    source_surface: Tensor | None = None,
+) -> tuple[TraceResult, TraceResult | None, TraceResult | None]:
+    """Shared scene first, then an environment fallback behind that scene.
+
+    This is layered radiance completion, not a depth-sorted union of geometry.
+    Shared tracing uses a black background so background energy is counted once.
+    Return the original separate trace as well, preserving its refinement data.
+    """
+    if not shared:
+        if checkpoint.env is None:
+            raise ValueError("Reflection requires environment Gaussians")
+        extra = tracer.trace(checkpoint.env, rays, background=checkpoint.env_bg_color)
+        return extra, None, extra
+    if checkpoint.pcd is None:
+        raise ValueError("Shared reflection requires interface Gaussians")
+    offset = checkpoint.reflection_ray_offset
+    if not 0 < offset < float("inf"):
+        raise ValueError("reflection_ray_offset must be finite and positive")
+    # Avoid immediately re-hitting the launch surface. Offset is in world units.
+    rays = RayBundle(
+        origins=rays.origins + F.normalize(rays.directions, dim=-1) * offset,
+        directions=rays.directions,
+    )
+    source_kwargs = {} if source_surface is None else {"source_surface": source_surface}
+    primary = tracer.trace(checkpoint.pcd, rays, background=torch.zeros_like(checkpoint.bg_color), **source_kwargs)
+    if not separate:
+        return primary, primary, None
+    if checkpoint.env is None:
+        raise ValueError("Separate reflection requires environment Gaussians")
+    extra = tracer.trace(checkpoint.env, rays, background=checkpoint.env_bg_color)
+    remaining = 1.0 - primary.alpha.clamp(0.0, 1.0)
+    combined = TraceResult(
+        rgb=primary.rgb + remaining * extra.rgb,
+        alpha=primary.alpha + remaining * extra.alpha,
+        depth=primary.depth + remaining * extra.depth,
+        normal=primary.normal + remaining * extra.normal,
+    )
+    return combined, primary, extra
+
+
 def render_glint_transport(
     camera: Any,
     checkpoint: GlintCheckpoint,
     tracer: GlintRayTracer | None,
     *,
-    stage: Literal["interface", "transmission", "full"] = "full",
+    stage: Literal["interface", "transmission", "shared_reflection", "full"] | None = None,
     depth_ratio: float = 0.0,
     scaling_modifier: float = 1.0,
     f0: float = 0.04,
@@ -288,7 +355,11 @@ def render_glint_transport(
 ) -> AttrDict:
     """Render one curriculum stage of the canonical GLINT pipeline."""
 
-    if stage not in {"interface", "transmission", "full"}:
+    if stage is None:
+        stage = checkpoint.render_stage or (
+            "shared_reflection" if checkpoint.shared_reflection and not checkpoint.separate_reflection_enabled else "full"
+        )
+    if stage not in {"interface", "transmission", "shared_reflection", "full"}:
         raise ValueError(f"Unknown GLINT training stage: {stage}")
     if checkpoint.pcd is None:
         raise ValueError("GLINT transport requires the interface set")
@@ -325,6 +396,10 @@ def render_glint_transport(
     zero_rgb = torch.zeros_like(interface_rgb)
     transmission_trace = None
     reflection_trace = None
+    shared_reflection_trace = None
+    extra_reflection_trace = None
+    secondary_shared_reflection_trace = None
+    secondary_extra_reflection_trace = None
     secondary_reflection_trace = None
     transmission_direct = None
     secondary_reflection = zero_rgb
@@ -338,7 +413,7 @@ def render_glint_transport(
     else:
         assert tracer is not None and checkpoint.trans_env is not None
         need_transmission_direct = render_transmission_direct or (
-            stage == "full" and render_secondary_reflection
+            stage in {"shared_reflection", "full"} and render_secondary_reflection
         )
         if need_transmission_direct:
             # GLINT rasterizes G_trans from the target camera in addition to
@@ -376,11 +451,13 @@ def render_glint_transport(
             fresnel = weights.fresnel
             energy_sum = weights.energy_sum
         else:
-            assert checkpoint.env is not None
-            reflection_trace = tracer.trace(
-                checkpoint.env,
+            reflection_trace, shared_reflection_trace, extra_reflection_trace = trace_reflection_paths(
+                checkpoint,
+                tracer,
                 reflection_rays,
-                background=checkpoint.env_bg_color,
+                shared=checkpoint.shared_reflection or stage == "shared_reflection",
+                separate=stage == "full",
+                source_surface=make_source_surface_filter(camera_rays, reflection_rays, normals, checkpoint),
             )
             transmission_specularity = None
             if (
@@ -396,10 +473,13 @@ def render_glint_transport(
                     direct_normal,
                     detach_depth=True,
                 )
-                secondary_reflection_trace = tracer.trace(
-                    checkpoint.env,
+                secondary_reflection_trace, secondary_shared_reflection_trace, secondary_extra_reflection_trace = trace_reflection_paths(
+                    checkpoint,
+                    tracer,
                     secondary_reflection_rays,
-                    background=checkpoint.env_bg_color,
+                    shared=checkpoint.shared_reflection or stage == "shared_reflection",
+                    separate=stage == "full",
+                    source_surface=make_source_surface_filter(camera_rays, secondary_reflection_rays, direct_normal, checkpoint),
                 )
                 transmission_specularity = transmission_trace.specular
             composition = compose_glint_radiance(
@@ -426,12 +506,19 @@ def render_glint_transport(
             energy_sum = composition.weights.energy_sum
 
     rendered = diffuse + reflection + transmission + secondary_reflection
+    shared_reflection_rgb = zero_rgb
+    extra_reflection_rgb = reflection
+    if shared_reflection_trace is not None:
+        shared_reflection_rgb = composition.weights.reflection * shared_reflection_trace.rgb
+        extra_reflection_rgb = reflection - shared_reflection_rgb
 
     output = AttrDict(
         stage=stage,
         render=rendered.permute(2, 0, 1),
         dif_render=diffuse.permute(2, 0, 1),
         ref_render=reflection.permute(2, 0, 1),
+        shared_ref_render=shared_reflection_rgb.permute(2, 0, 1),
+        extra_ref_render=extra_reflection_rgb.permute(2, 0, 1),
         trans_render=transmission.permute(2, 0, 1),
         secondary_ref_render=secondary_reflection.permute(2, 0, 1),
         rgb_map=_flatten_image(rendered),
@@ -465,6 +552,10 @@ def render_glint_transport(
         ),
         interface=interaction,
         reflection_trace=reflection_trace,
+        shared_reflection_trace=shared_reflection_trace,
+        extra_reflection_trace=extra_reflection_trace,
+        secondary_shared_reflection_trace=secondary_shared_reflection_trace,
+        secondary_extra_reflection_trace=secondary_extra_reflection_trace,
         secondary_reflection_trace=secondary_reflection_trace,
         transmission_trace=transmission_trace,
         transmission_direct=transmission_direct,

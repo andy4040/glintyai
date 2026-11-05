@@ -180,7 +180,19 @@ def main() -> None:
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--transmission-start", type=int)
     parser.add_argument("--reflection-start", type=int)
+    parser.add_argument(
+        "--shared-reflection-start", type=int,
+        help="Enable reflection through interface Gaussians at this step, before --reflection-start.",
+    )
+    parser.add_argument(
+        "--reflection-ray-offset", type=float,
+        help="Positive world-space offset for shared reflection rays (default: 1e-4).",
+    )
     parser.add_argument("--interface-freeze", type=int)
+    parser.add_argument("--source-surface-filter", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--source-depth-tolerance", type=float)
+    parser.add_argument("--source-max-distance", type=float)
+    parser.add_argument("--source-normal-cosine", type=float)
     parser.add_argument(
         "--interface-geometry-freeze",
         type=int,
@@ -270,18 +282,25 @@ def main() -> None:
         )
         initialization = f"interface={interface_ply} reflection={reflection_ply}"
 
+    saved_schedule = {}
+    if args.resume is not None:
+        saved_schedule = torch.load(
+            args.resume, map_location="cpu", weights_only=not args.trust_checkpoint
+        ).get("schedule", {})
     transmission_start = (
         int(args.transmission_start)
         if args.transmission_start is not None
-        else int(sampler.get("render_transmission_start_iter", 1_000))
+        else int(saved_schedule.get("transmission_start", sampler.get("render_transmission_start_iter", 1_000)))
     )
     reflection_start = (
         int(args.reflection_start)
         if args.reflection_start is not None
-        else int(sampler.get("render_reflection_start_iter", 3_000))
+        else int(saved_schedule.get("reflection_start", sampler.get("render_reflection_start_iter", 3_000)))
     )
     if args.interface_freeze is not None:
         interface_freeze = args.interface_freeze
+    elif "interface_freeze" in saved_schedule:
+        interface_freeze = saved_schedule["interface_freeze"]
     elif bool(sampler.get("pcd_freeze_enabled", False)):
         interface_freeze = int(sampler.get("pcd_freeze_iter", 31_000))
     else:
@@ -290,6 +309,18 @@ def main() -> None:
         transmission_start=transmission_start,
         reflection_start=reflection_start,
         interface_freeze=interface_freeze,
+        shared_reflection_start=(args.shared_reflection_start if args.shared_reflection_start is not None
+                                 else saved_schedule.get("shared_reflection_start", sampler.get("shared_reflection_start_iter"))),
+        reflection_ray_offset=(args.reflection_ray_offset if args.reflection_ray_offset is not None
+                               else float(saved_schedule.get("reflection_ray_offset", sampler.get("reflection_ray_offset", 1e-4)))),
+        source_surface_filter=(args.source_surface_filter if args.source_surface_filter is not None
+                               else bool(saved_schedule.get("source_surface_filter", False))),
+        source_depth_tolerance=(args.source_depth_tolerance if args.source_depth_tolerance is not None
+                                else float(saved_schedule.get("source_depth_tolerance", 0.005))),
+        source_max_distance=(args.source_max_distance if args.source_max_distance is not None
+                             else float(saved_schedule.get("source_max_distance", 0.02))),
+        source_normal_cosine=(args.source_normal_cosine if args.source_normal_cosine is not None
+                              else float(saved_schedule.get("source_normal_cosine", 0.95))),
     )
 
     max_steps = (
