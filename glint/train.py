@@ -332,7 +332,7 @@ def main() -> None:
         source_max_distance=(args.source_max_distance if args.source_max_distance is not None
                              else float(saved_schedule.get("source_max_distance", 0.02))),
         source_normal_cosine=(args.source_normal_cosine if args.source_normal_cosine is not None
-                              else float(saved_schedule.get("source_normal_cosine", 0.95))),
+                              else float(saved_schedule.get("source_normal_cosine", 0.9))),
     )
 
     max_steps = (

@@ -32,6 +32,26 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
+// Empty [0] is the Python wrapper's sentinel for omitted source opacities.
+// These values affect only detached source-surface classification.
+static const float* sourceOpacityPointer(
+    const torch::Tensor& source_opacities,
+    const torch::Tensor& ray_o,
+    const torch::Tensor& means3D)
+{
+    if (source_opacities.dim() == 1 && source_opacities.numel() == 0)
+        return nullptr;
+    TORCH_CHECK(source_opacities.is_cuda() && source_opacities.is_contiguous()
+                && source_opacities.scalar_type() == torch::kFloat32
+                && source_opacities.device() == ray_o.device()
+                && source_opacities.device() == means3D.device()
+                && source_opacities.dim() == 2
+                && source_opacities.size(0) == means3D.size(0)
+                && source_opacities.size(1) == 1,
+                "source_opacities must be contiguous CUDA float32 [N,1] on the ray and Gaussian device");
+    return source_opacities.data_ptr<float>();
+}
+
 
 void 
 BuildAccelerationStructure(
@@ -167,6 +187,7 @@ TraceSurfelsCUDA(
     const torch::Tensor& ray_o,
     const torch::Tensor& ray_d,
     const torch::Tensor& source_surface,
+    const torch::Tensor& source_opacities,
     const torch::Tensor& vertices,
     const torch::Tensor& background,
     const torch::Tensor& means3D,
@@ -262,6 +283,7 @@ TraceSurfelsCUDA(
         TORCH_CHECK(max_trace_depth == 0, "source filtering requires explicit single-bounce tracing");
     }
     params.source_surface = source_surface.numel() ? source_surface.data_ptr<float>() : nullptr;
+    params.source_opacities = sourceOpacityPointer(source_opacities, ray_o, means3D);
     params.vertices = reinterpret_cast<float3*>(vertices.contiguous().data_ptr<float>());
     params.background = background.contiguous().data_ptr<float>();
     params.means3D = reinterpret_cast<float3*>(means3D.contiguous().data_ptr<float>());
@@ -322,6 +344,7 @@ TraceSurfelsBackwardCUDA(
     const torch::Tensor& ray_o,
     const torch::Tensor& ray_d,
     const torch::Tensor& source_surface,
+    const torch::Tensor& source_opacities,
     const torch::Tensor& vertices,
     const torch::Tensor& background,
     const torch::Tensor& means3D,
@@ -422,6 +445,7 @@ TraceSurfelsBackwardCUDA(
         TORCH_CHECK(max_trace_depth == 0, "source filtering requires explicit single-bounce tracing");
     }
     params.source_surface = source_surface.numel() ? source_surface.data_ptr<float>() : nullptr;
+    params.source_opacities = sourceOpacityPointer(source_opacities, ray_o, means3D);
     params.vertices = reinterpret_cast<float3*>(vertices.contiguous().data_ptr<float>());
     params.background = background.contiguous().data_ptr<float>();
     params.means3D = reinterpret_cast<float3*>(means3D.contiguous().data_ptr<float>());

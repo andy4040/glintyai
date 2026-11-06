@@ -49,3 +49,6 @@ Paper = "https://arxiv.org/abs/2603.26181"
 
 [tool.setuptools.packages.find]
 include = ["glint*"]
+
+[tool.setuptools.package-data]
+glint = ["templates/*.html"]

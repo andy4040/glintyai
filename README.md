@@ -1,5 +1,53 @@
 # GLINT: Modeling Scene-Scale Transparency via Gaussian Radiance Transport
 
+## Server-side checkpoint and viewer backup
+
+`scripts/launch_archived_training.sh` launches the material-first experiment
+with `nohup` on the GPU server. After successful training, it first uploads the
+final checkpoint to a GitHub Release, then exports and uploads the interface /
+transmission 3D viewer, actual shared-reflection ON/OFF renders, source snapshot,
+configuration and SHA-256 manifest. Shared reflection reuses the interface set;
+there is no third independent shared-reflection Gaussian set. The downloadable
+viewer uses WebGL2 and a local HTTP server, not GitHub Pages hosting.
+
+The GPU server needs a repository-scoped GitHub credential with Contents write
+permission. Set `GH_TOKEN` in the server environment, or store it privately in
+`~/.config/glint/github-token` (directory mode 700, file mode 600). Never commit
+that file or paste its contents into logs. Verify server authentication first:
+
+```bash
+python -m glint.archive_run --check-auth
+export DATA_ROOT=/root/glint-datasets/3D-FRONT-T/scene_3
+export OUTPUT_DIR=/root/GLINT-material-opacity-test/results/new-experiment
+export RELEASE_TAG=scene3-new-experiment
+bash scripts/launch_archived_training.sh
+```
+
+Activate the environment containing the rebuilt OptiX extension before launch.
+Use a new output directory and unique tag. The launch fails before training if
+server credentials are missing; a laptop's Git login is not sufficient. The
+laptop can disconnect after launch, but the GPU server must remain running.
+Read `OUTPUT_DIR/server-job.log` for progress and
+`OUTPUT_DIR/github-archive/uploaded.json` for the completed Release URL.
+
+Uploads retry every minute for up to 24 hours, skip assets already verified by
+size and GitHub SHA-256 digest, and never overwrite an existing completed asset.
+Assets exceeding 1900 MiB are split; the manifest records their original names,
+order and hashes for reassembly. Failed training is not published as a final
+result. If viewer export fails, the checkpoint upload receipt remains in
+`github-archive/checkpoint-uploaded.json`. Rerun the following command to resume
+packaging/upload without training:
+
+```bash
+python -m glint.archive_run --run-dir "$OUTPUT_DIR" --tag "$RELEASE_TAG" \
+  --config configs/exps/glint/3d-front-t/scene_3_material_first.yaml \
+  --data-root "$DATA_ROOT"
+```
+
+Add `--prepare-only` to export/package locally without GitHub credentials or
+network writes. Existing saved material/filter settings are respected during
+rendering; a source snapshot documents the renderer used for the export.
+
 [![arXiv](https://img.shields.io/badge/arXiv-2603.26181-b31b1b.svg)](https://arxiv.org/abs/2603.26181)
 [![Project page](https://img.shields.io/badge/GLINT-Project%20Page-blue.svg)](https://youngju-na.github.io/GLINT)
 [![Dataset](https://img.shields.io/badge/Dataset-Download-green.svg)](https://drive.google.com/drive/folders/1626l8RXKLpCqRhGLdGSYhcumm3HjOnYg?usp=sharing)
@@ -234,6 +282,15 @@ along the normalized reflected direction to reduce self-intersections. It may
 need adjustment for different scene scales or inaccurate interface depths.
 LPM, new point allocation rules, and opacity reset changes are not included.
 
+Shared-scene reflection now uses material-aware opacity: each interface surfel
+has effective opacity `opacity * (1 - transparency)` before its Gaussian
+footprint, alpha clamp and front-to-back accumulation. This applies to both
+primary and secondary shared reflection, on either side of a surfel. Gradients
+flow through the product to both opacity and transparency. Direct camera,
+transmission-set and separate-reflection rendering retain their original
+opacity. This is a straight-through visibility approximation; it does not add
+refraction or recursive Fresnel transport at the encountered transparent surface.
+
 Source-surface filtering (`--source-surface-filter`) rejects shared-scene
 self-hits using a detached per-ray candidate test in **both** OptiX forward and
 backward traversal. Candidates must overlap the original camera pixel's ray
@@ -248,11 +305,16 @@ semantic surface segmentation or exact visibility-weight provenance. Parallel
 surfaces closer than the configured tolerance may still be ambiguous; large
 depth errors can exceed the rejection band. Defaults are world-space
 `--source-depth-tolerance 0.005`, `--source-max-distance 0.02`, and normal
-agreement `--source-normal-cosine 0.95`. Adjust for scene scale. Invalid/zero
+agreement `--source-normal-cosine 0.9` (about 25.84 degrees). Adjust for scene scale. Invalid/zero
 source normals cause no rejection. Use `--no-source-surface-filter` for an
 ablation. These settings are saved in the checkpoint and restored on resume.
+An older checkpoint retains its stored threshold; pass `--source-normal-cosine
+0.9` on resume to override it. Source-pixel membership still uses the original
+geometric opacity, independently of material-aware reflection opacity, so
+transparent camera contributors are not accidentally removed from the filter.
 
-The native OptiX extension **must be rebuilt** for this feature. Build and run
+The native OptiX extension **must be rebuilt** for material-aware reflection
+with source filtering (the new `source_opacities` input). Build and run
 in a separate virtual environment when another training process is using the
 old extension; do not overwrite its binaries/PTX in place. The CPU reference
 tracer implements the same filter for regression tests. Supported native

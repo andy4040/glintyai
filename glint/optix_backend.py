@@ -102,6 +102,7 @@ class OptixSurfelTracer(nn.Module):
         *,
         background: Tensor,
         source_surface: Tensor | None = None,
+        material_aware_opacity: bool = False,
     ) -> TraceResult:
         means = gaussians.get_xyz.contiguous()
         scales = gaussians.get_scaling[..., :2].contiguous()
@@ -113,6 +114,12 @@ class OptixSurfelTracer(nn.Module):
 
         device, dtype = means.device, means.dtype
         height, width, _ = rays.origins.shape
+        raw_opacities = gaussians.get_opacity
+        opacities = raw_opacities
+        if material_aware_opacity and gaussians.has_transparency:
+            # Native grad_opacities chains through this product to both learned
+            # parameters. Geometry/BVH and the direct camera path are unchanged.
+            opacities = opacities * (1.0 - gaussians.get_transmission_coeff)
         source_kwargs = {}
         if source_surface is not None:
             if "source_surface" not in self._settings_type._fields:
@@ -122,6 +129,15 @@ class OptixSurfelTracer(nn.Module):
             if source_surface.shape != (height, width, 16) or source_surface.device != device:
                 raise ValueError("source_surface must have shape [H,W,16] on the ray device")
             source_kwargs["source_surface"] = source_surface.detach().to(dtype=torch.float32).contiguous()
+            if material_aware_opacity and gaussians.has_transparency:
+                if "source_opacities" not in self._settings_type._fields:
+                    raise RuntimeError(
+                        "Rebuild the material-opacity OptiX extension in an isolated "
+                        "environment to preserve source-surface filtering"
+                    )
+                # Classify source-pixel contributors using the original camera
+                # opacity, independently of the material-aware reflected alpha.
+                source_kwargs["source_opacities"] = raw_opacities.detach().contiguous()
         settings = self._settings_type(
             image_height=height,
             image_width=width,
@@ -160,7 +176,7 @@ class OptixSurfelTracer(nn.Module):
             shs=gaussians.get_features.contiguous(),
             colors_precomp=None,
             others_precomp=others,
-            opacities=gaussians.get_opacity.contiguous(),
+            opacities=opacities.contiguous(),
             scales=scales,
             rotations=quats,
             cov3D_precomp=None,

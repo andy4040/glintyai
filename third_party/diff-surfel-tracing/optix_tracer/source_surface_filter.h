@@ -30,6 +30,10 @@ static __forceinline__ __device__ bool exclude_source_surface(
     const float v = dot(delta, R[1]) / p.scales[gidx].y;
     // Match the actual finite OptiX surfel support as well as Gaussian alpha.
     if (fabsf(u) > 3.0f || fabsf(v) > 3.0f) return false;
-    const float alpha = p.opacities[gidx] * expf(-0.5f * (u*u + v*v));
+    // Classify against the original camera-visible surface even when the
+    // reflected ray composites with material-attenuated opacity.
+    const float opacity = p.source_opacities != nullptr
+        ? p.source_opacities[gidx] : p.opacities[gidx];
+    const float alpha = opacity * expf(-0.5f * (u*u + v*v));
     return alpha >= f[15];
 }

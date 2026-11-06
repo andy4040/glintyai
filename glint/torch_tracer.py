@@ -43,6 +43,7 @@ class TorchSurfelTracer(nn.Module):
         *,
         background: Tensor,
         source_surface: Tensor | None = None,
+        material_aware_opacity: bool = False,
     ) -> TraceResult:
         height, width, _ = rays.origins.shape
         origins = rays.origins.reshape(-1, 3)
@@ -81,7 +82,12 @@ class TorchSurfelTracer(nn.Module):
         offsets = points - means[None, :, :]
         u = (offsets * tangent_u[None, :, :]).sum(dim=-1) / scales[None, :, 0]
         v = (offsets * tangent_v[None, :, :]).sum(dim=-1) / scales[None, :, 1]
-        alpha = gaussians.get_opacity.reshape(1, -1) * torch.exp(
+        opacities = gaussians.get_opacity
+        if material_aware_opacity and gaussians.has_transparency:
+            # Keep the product in the autograd graph: reflected color must
+            # supervise both geometric opacity and material transparency.
+            opacities = opacities * (1.0 - gaussians.get_transmission_coeff)
+        alpha = opacities.reshape(1, -1) * torch.exp(
             -0.5 * (u.square() + v.square())
         )
         alpha = alpha.clamp(max=self.max_alpha)
@@ -101,6 +107,8 @@ class TorchSurfelTracer(nn.Module):
                 delta = camera + t[...,None]*incoming - means[None]
                 su = (delta*tangent_u[None]).sum(-1)/scales[None,:,0]
                 sv = (delta*tangent_v[None]).sum(-1)/scales[None,:,1]
+                # Source membership describes the primary camera rasterization,
+                # which still uses raw geometric opacity, not reflected visibility.
                 source_alpha = gaussians.get_opacity.reshape(1,-1)*torch.exp(-.5*(su.square()+sv.square()))
                 excluded = ((points-launch).norm(dim=-1) <= f[:,13:14]) & (
                     (normals*source_n).sum(-1).abs() >= f[:,14:15]) & (

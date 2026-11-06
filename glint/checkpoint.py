@@ -162,7 +162,7 @@ class GlintCheckpoint:
     source_surface_filter: bool = False
     source_depth_tolerance: float = 0.005
     source_max_distance: float = 0.02
-    source_normal_cosine: float = 0.95
+    source_normal_cosine: float = 0.9
     preserve_transparency_without_transmission: bool = False
 
 
@@ -235,6 +235,6 @@ def load_glint_checkpoint(
         source_surface_filter=bool(schedule.get("source_surface_filter", False)),
         source_depth_tolerance=float(schedule.get("source_depth_tolerance", 0.005)),
         source_max_distance=float(schedule.get("source_max_distance", 0.02)),
-        source_normal_cosine=float(schedule.get("source_normal_cosine", 0.95)),
+        source_normal_cosine=float(schedule.get("source_normal_cosine", 0.9)),
         preserve_transparency_without_transmission=(bool(schedule) and curriculum.transmission_paused(step)),
     )

@@ -65,6 +65,7 @@ class GlintRayTracer(Protocol):
         *,
         background: Tensor,
         source_surface: Tensor | None = None,
+        material_aware_opacity: bool = False,
     ) -> TraceResult:
         ...
 
@@ -324,7 +325,12 @@ def trace_reflection_paths(
         directions=rays.directions,
     )
     source_kwargs = {} if source_surface is None else {"source_surface": source_surface}
-    primary = tracer.trace(checkpoint.pcd, rays, background=torch.zeros_like(checkpoint.bg_color), **source_kwargs)
+    # Shared rays traverse the interface's material-bearing scene. Transparent
+    # surfels pass radiance through instead of acting as opaque RGB occluders.
+    primary = tracer.trace(
+        checkpoint.pcd, rays, background=torch.zeros_like(checkpoint.bg_color),
+        material_aware_opacity=True, **source_kwargs,
+    )
     if not separate:
         return primary, primary, None
     if checkpoint.env is None:

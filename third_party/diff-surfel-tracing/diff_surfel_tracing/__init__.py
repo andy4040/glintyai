@@ -69,6 +69,22 @@ class _TraceSurfels(torch.autograd.Function):
                 tracer_settings,
                 ):
 
+        # Source membership uses geometric opacity, independently of any
+        # material attenuation supplied in the compositing opacities. This is
+        # detached classification data, not an additional differentiable input.
+        source_opacities = tracer_settings.source_opacities
+        if source_opacities is not None:
+            if (not source_opacities.is_cuda
+                    or source_opacities.dtype != torch.float32
+                    or not source_opacities.is_contiguous()
+                    or source_opacities.device != ray_o.device
+                    or source_opacities.device != means3D.device
+                    or source_opacities.shape != (means3D.shape[0], 1)):
+                raise ValueError("source_opacities must be contiguous CUDA float32 [N,1] on the ray and Gaussian device")
+            source_opacities = source_opacities.detach()
+        else:
+            source_opacities = ray_o.new_empty(0)
+
         # Restructure arguments the way that the C++ lib expects them
         args = (optix_context,
                 training,
@@ -76,6 +92,7 @@ class _TraceSurfels(torch.autograd.Function):
                 ray_o,
                 ray_d,
                 (tracer_settings.source_surface if tracer_settings.source_surface is not None else ray_o.new_empty(0)),
+                source_opacities,
                 vertices,
                 tracer_settings.bg,
                 means3D,
@@ -113,7 +130,7 @@ class _TraceSurfels(torch.autograd.Function):
         ctx.optix_context = optix_context
         ctx.start_from_first = start_from_first
         ctx.save_for_backward(ray_o, ray_d, vertices, means3D, shs, colors_precomp, others_precomp, opacities, scales, rotations, cov3Ds_precomp,
-                              out_rgb, out_dpt, out_acc, out_norm, out_dist, out_aux, mid_val)
+                              out_rgb, out_dpt, out_acc, out_norm, out_dist, out_aux, mid_val, source_opacities)
 
         # Return the per-Gaussian hit counter for training gradient filtering
         acc_wet = a_weights if a_weights is not None else torch.zeros_like(means3D[:, 0], dtype=means3D.dtype, device=means3D.device)
@@ -128,7 +145,7 @@ class _TraceSurfels(torch.autograd.Function):
         optix_context = ctx.optix_context
         start_from_first = ctx.start_from_first
         ray_o, ray_d, vertices, means3D, shs, colors_precomp, others_precomp, opacities, scales, rotations, cov3Ds_precomp, \
-            out_rgb, out_dpt, out_acc, out_norm, out_dist, out_aux, mid_val = ctx.saved_tensors
+            out_rgb, out_dpt, out_acc, out_norm, out_dist, out_aux, mid_val, source_opacities = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
         args = (optix_context,
@@ -136,6 +153,7 @@ class _TraceSurfels(torch.autograd.Function):
                 ray_o,
                 ray_d,
                 (tracer_settings.source_surface if tracer_settings.source_surface is not None else ray_o.new_empty(0)),
+                source_opacities,
                 vertices,
                 tracer_settings.bg,
                 means3D,
@@ -219,6 +237,7 @@ class SurfelTracingSettings(NamedTuple):
     max_trace_depth: int = 0
     specular_threshold: float = 0.0
     source_surface: torch.Tensor = None
+    source_opacities: torch.Tensor = None  # optional detached geometric opacity [N,1]
 
 
 class SurfelTracer(nn.Module):

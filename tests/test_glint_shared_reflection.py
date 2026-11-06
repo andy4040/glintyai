@@ -97,7 +97,8 @@ class ConstantTracer:
         self.extra_color = torch.tensor([[[.8, .6, .1]]], requires_grad=True)
         self.calls = []
 
-    def trace(self, g, rays, *, background):
+    def trace(self, g, rays, *, background, material_aware_opacity=False):
+        assert material_aware_opacity == (g == "shared")
         self.calls.append((g, rays, background))
         a = self.alpha if g == "shared" else .5
         color = self.shared_color if g == "shared" else self.extra_color
@@ -152,7 +153,7 @@ def test_checkpoint_roundtrip_preserves_curriculum(tmp_path,step,stage):
 def test_shared_tracing_skips_launch_plane_and_hits_scene():
     # Launch at z=0 toward -z: the interface plane at the origin must not
     # obscure the second existing scene surfel at z=-2.
-    shared=_gaussian_set([[0,0,0],[0,0,-2]],opacity=.9,role="interface")
+    shared=_gaussian_set([[0,0,0],[0,0,-2]],opacity=.9,transparency=0.,role="interface")
     cp=_checkpoint();cp.pcd=shared
     rays=RayBundle(torch.zeros(1,1,3),torch.tensor([[[0.,0.,-1.]]]))
     result,_,_=trace_reflection_paths(cp,TorchSurfelTracer(),rays,shared=True,separate=False)
@@ -205,10 +206,14 @@ def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_
             self.calls = []
             self.reference = TorchSurfelTracer()
 
-        def trace(self, gaussian_set, rays, *, background):
+        def trace(self, gaussian_set, rays, *, background, material_aware_opacity=False):
             self.calls.append(gaussian_set)
             assert gaussian_set is interface, "inactive environment set was traced"
-            return self.reference.trace(gaussian_set, rays, background=background)
+            assert material_aware_opacity
+            return self.reference.trace(
+                gaussian_set, rays, background=background,
+                material_aware_opacity=material_aware_opacity,
+            )
 
     tracer = RecordingTracer()
     camera = GlintCamera(
@@ -239,13 +244,16 @@ def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_
     torch.testing.assert_close(output.render, output.dif_render + output.ref_render)
     diffuse_weight = (1 - (.2 + .8 * .04)) * (.3 if preserve_material else 1.)
     torch.testing.assert_close(output.dif_render.flatten(), colors[0] * diffuse_weight)
-    output.render.sum().backward()
+    # Distinguish colors: with material-aware visibility their RGB sums can
+    # coincide, making an unweighted sum insensitive to the reflection mix.
+    output.render.square().sum().backward()
     assert interface._features_dc.grad[0].abs().sum() > 0  # direct path
     assert interface._features_dc.grad[1].abs().sum() > 0  # reflected path
     assert interface._specular.grad.abs().sum() > 0
+    # The reflected object's transparency now also controls shared visibility,
+    # even when the launch pixel's unavailable transmission path is reallocated.
+    assert interface._transmission_coeff.grad[1].abs().sum() > 0
     if preserve_material:
-        assert interface._transmission_coeff.grad.abs().sum() > 0
-    else:
-        assert interface._transmission_coeff.grad is None
+        assert interface._transmission_coeff.grad[0].abs().sum() > 0
     for gaussian_set in (transmission, extra):
         assert all(parameter.grad is None for parameter in gaussian_set.parameter_map().values())

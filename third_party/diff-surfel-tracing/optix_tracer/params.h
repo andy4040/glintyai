@@ -33,6 +33,7 @@ struct Params
     int P, H, W, D, M;  // Gaussian number, height, width, SHs number
     float3* ray_o;  // (H, W, 3), ray origin
     const float* source_surface;  // optional per-ray detached source filter [H,W,16]
+    const float* source_opacities;  // optional geometric opacity for source membership [N,1]
     float3* ray_d;  // (H, W, 3), ray direction
     float3* vertices;  // (P * 2, 3), primitive vertices
     float* background;  // (3), background color

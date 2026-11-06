@@ -10,6 +10,7 @@ python -m glint.train \
   --max-steps 9000 \
   --no-separate-reflection \
   --source-surface-filter \
+  --source-normal-cosine 0.9 \
   --save-every 1000 \
   --image-every 1000 \
   "$@"

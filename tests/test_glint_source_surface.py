@@ -23,7 +23,7 @@ def backend(request):
 
 
 def setup_scene(device, positions, *, direction=(0,0,-1), launch=(0,0,2.0033345), scale=(1,1)):
-    g=_gaussian_set(positions, color=(1,0,0), opacity=.8, scale=scale, role='interface',device=device)
+    g=_gaussian_set(positions, color=(1,0,0), opacity=.8, transparency=0., scale=scale, role='interface',device=device)
     cp=GlintCheckpoint(g,None,None,torch.zeros(3,device=device),torch.zeros(3,device=device),
                        torch.zeros(3,device=device),0,source_surface_filter=True)
     o=torch.tensor(launch,device=device,dtype=torch.float32).reshape(1,1,3)
@@ -102,7 +102,7 @@ def test_invalid_source_settings(kwargs):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='gsplat requires CUDA')
 def test_actual_expected_depth_launch_self_hit_regression(kind):
     device=torch.device('cuda')
-    pcd=_gaussian_set([[0,0,2],[0,0,2.02]],color=(1,0,0),scale=(10,10),opacity=.8,role='interface',device=device)
+    pcd=_gaussian_set([[0,0,2],[0,0,2.02]],color=(1,0,0),scale=(10,10),opacity=.8,transparency=0.,role='interface',device=device)
     trans=_gaussian_set([[0,0,4]],role='transmission',device=device)
     zero=torch.zeros(3,device=device)
     cp=GlintCheckpoint(pcd,None,trans,zero,zero,zero,0,shared_reflection=True,separate_reflection_enabled=False)

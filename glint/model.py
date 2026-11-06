@@ -39,7 +39,7 @@ class GlintStageSchedule:
     source_surface_filter: bool = False
     source_depth_tolerance: float = 0.005
     source_max_distance: float = 0.02
-    source_normal_cosine: float = 0.95
+    source_normal_cosine: float = 0.9
     transmission_pause_start: int | None = None
     transmission_resume: int | None = None
 
@@ -290,7 +290,7 @@ class GlintTrainingModel(nn.Module):
             source_surface_filter=schedule.source_surface_filter if schedule else False,
             source_depth_tolerance=schedule.source_depth_tolerance if schedule else 0.005,
             source_max_distance=schedule.source_max_distance if schedule else 0.02,
-            source_normal_cosine=schedule.source_normal_cosine if schedule else 0.95,
+            source_normal_cosine=schedule.source_normal_cosine if schedule else 0.9,
             preserve_transparency_without_transmission=(schedule is not None and step is not None
                                                        and schedule.transmission_paused(step)),
         )

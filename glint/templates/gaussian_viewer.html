@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GLINT scene_3 · 학습 결과</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10151b;color:#e6edf5;font:15px system-ui,sans-serif}header,main{max-width:1400px;margin:auto;padding:22px}h1{font-size:25px;margin:0 0 8px}.muted{color:#aab7c7;font-size:13px;line-height:1.65}.stats{display:flex;gap:25px;flex-wrap:wrap;margin:18px 0}.stat strong{display:block;font-size:29px;color:#91ddf0}.toolbar{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:13px;background:#1b2531;border-radius:10px 10px 0 0}select,button{padding:7px;background:#253444;color:white;border:1px solid #506176;border-radius:5px}#view{height:65vh;min-height:370px;position:relative;background:#080c12}canvas{display:block;width:100%;height:100%;touch-action:none}#status{position:absolute;bottom:12px;left:12px;background:#10151bce;padding:7px;pointer-events:none}.images{display:grid;grid-template-columns:1fr 1fr;gap:16px}figure{margin:0}img{width:100%;display:block;border-radius:8px}figcaption{padding:10px 0;color:#b3c7d8}a{color:#91ddf0}h2{font-size:19px;margin-top:26px}@media(max-width:700px){.images{grid-template-columns:1fr}}
+</style>
+<header><h1 id="result-title">GLINT · 학습 결과</h1><div class="muted">학습된 인터페이스·투과 2D Gaussian 형상</div><div id="stats" class="stats"></div></header>
+<main><div class="toolbar"><label>시점 <select id="camera"></select></label><button id="fit">장면 전체</button><label><input id="scene" type="checkbox" checked> 인터페이스</label><label><input id="optical" type="checkbox" checked> 투과</label><label><input id="unresolved" type="checkbox" disabled> 반사</label><label><input id="roles" type="checkbox"> 역할 색상</label></div>
+<div id="view"><canvas id="canvas"></canvas><div id="status">체크포인트 형상 불러오는 중…</div></div>
+<p class="muted">드래그: 회전 · Shift+드래그 / 오른쪽 드래그: 이동 · 휠: 확대/축소. 역할 색상: 청록 = 투과 집합, 빨강 = 반사 집합.<br>브라우저는 학습된 위치·크기·법선·opacity와 diffuse 색을 표시합니다. 중심 깊이 순서로 합성하는 근사 뷰어이며, 반사·투과 경로의 RGB 결과는 아래 오프라인 렌더링에서 확인하세요.</p>
+<p class="muted">저장된 체크포인트의 인터페이스와 투과 집합입니다.
+두 체크박스로 집합을 각각 켜고 끌 수 있습니다. 색은 SH0 근사이며 실제 광학 합성 결과가 아닙니다.
+별도 반사 집합은 비활성 상태라 내보내지 않았습니다.</p>
+<p><a href="?only=interface">인터페이스만 보기</a> · <a href="?only=optical">투과만 보기</a> ·
+<a href="../reflection/">실제 공유 반사 ON/OFF 렌더</a></p></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const add=(a,b)=>a.map((x,i)=>x+b[i]),sub=(a,b)=>a.map((x,i)=>x-b[i]),mul=(a,s)=>a.map(x=>x*s),dot=(a,b)=>a.reduce((s,x,i)=>s+x*b[i],0),cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],norm=a=>mul(a,1/Math.max(1e-10,Math.hypot(...a)));
+function rotate(v,axis,a){axis=norm(axis);return add(add(mul(v,Math.cos(a)),mul(cross(axis,v),Math.sin(a))),mul(axis,dot(axis,v)*(1-Math.cos(a))));}
+async function start(){
+ const options=new URLSearchParams(location.search);
+ if(options.get('only')==='interface'){$('scene').checked=true;$('optical').checked=false;$('unresolved').checked=false;}
+ if(options.get('only')==='optical'){
+  $('scene').checked=false;$('unresolved').checked=false;$('optical').checked=true;$('roles').checked=false;
+ }
+ if(options.get('only')==='candidates'){
+  $('scene').checked=false;$('unresolved').checked=true;$('optical').checked=true;$('roles').checked=false;
+ }
+ const [meta,dataResponse]=await Promise.all([fetch('scene.json').then(r=>{if(!r.ok)throw Error('scene.json');return r.json();}),fetch('gaussians.bin')]);
+ if(!dataResponse.ok)throw Error('gaussians.bin');
+ const data=new Float32Array(await dataResponse.arrayBuffer());
+ if(data.length!==meta.count*16)throw Error('Gaussian 파일 크기가 일치하지 않습니다.');
+ const metric=meta.evaluation?.image_metrics?.psnr;
+ $('result-title').textContent = `GLINT · 체크포인트 ${meta.step.toLocaleString()}`;
+ $('stats').innerHTML=[['PSNR (25-view mean)',metric===undefined?'미평가':metric.toFixed(3)+' dB'],['학습 단계',meta.step.toLocaleString()],['인터페이스',meta.counts.scene.toLocaleString()],['투과',meta.counts.optical.toLocaleString()],['반사',meta.counts.unresolved.toLocaleString()]].map(([k,v])=>`<div class="stat"><span>${k}</span><strong>${v}</strong></div>`).join('');
+ const canvas=$('canvas'),gl=canvas.getContext('webgl2',{alpha:false,antialias:false});
+ if(!gl)throw Error('WebGL2를 사용할 수 없습니다. Chrome의 하드웨어 가속 설정을 확인하세요.');
+ function shader(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;}
+ const program=gl.createProgram();
+ gl.attachShader(program,shader(gl.VERTEX_SHADER,`#version 300 es
+ precision highp float;
+ layout(location=0) in vec2 corner;layout(location=1) in vec3 center;layout(location=2) in vec3 axisU;layout(location=3) in vec3 axisV;layout(location=4) in vec3 rgb;layout(location=5) in vec4 style;
+ uniform vec3 eye,right,up,forward;uniform float tanFov,aspect;uniform bool roles;uniform vec3 visible;
+ out vec2 uv;flat out vec3 color;flat out float opacity;
+ void main(){uv=corner*3.33;vec3 p=center+axisU*uv.x+axisV*uv.y-eye;float z=dot(p,forward);gl_Position=vec4(dot(p,right)/(tanFov*aspect),dot(p,up)/tanFov,z-0.002,z);color=rgb;int group=int(style.y+0.5);opacity=style.x*visible[group];if(roles&&group==1)color=vec3(0.,.9,.95);if(roles&&group==2)color=vec3(1.,.08,.08);}`));
+ gl.attachShader(program,shader(gl.FRAGMENT_SHADER,`#version 300 es
+ precision highp float;in vec2 uv;flat in vec3 color;flat in float opacity;out vec4 frag;
+ void main(){float a=opacity*exp(-.5*dot(uv,uv));if(a<1./255.)discard;frag=vec4(color,min(a,.999));}`));
+ gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+ const quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]),gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+ const instances=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,instances);
+ [[1,3,0],[2,3,3],[3,3,6],[4,3,9],[5,4,12]].forEach(([loc,n,offset])=>{gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,n,gl.FLOAT,false,64,offset*4);gl.vertexAttribDivisor(loc,1);});
+ gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.disable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);
+ const uniforms=Object.fromEntries(['eye','right','up','forward','tanFov','aspect','roles','visible'].map(k=>[k,gl.getUniformLocation(program,k)]));
+ let eye,pivot,up,worldUp,tanFov=.4,pending=false;
+ const sorted=new Float32Array(data.length),order=Array.from({length:meta.count},(_,i)=>i),depths=new Float32Array(meta.count);
+ function draw(){pending=false;const dpr=Math.min(devicePixelRatio,2),w=Math.round(canvas.clientWidth*dpr),h=Math.round(canvas.clientHeight*dpr);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}gl.viewport(0,0,w,h);
+  const forward=norm(sub(pivot,eye)),right=norm(cross(forward,up));up=norm(cross(right,forward));
+  for(let i=0;i<meta.count;i++){const j=i*16;depths[i]=(data[j]-eye[0])*forward[0]+(data[j+1]-eye[1])*forward[1]+(data[j+2]-eye[2])*forward[2];}order.sort((a,b)=>depths[b]-depths[a]);for(let i=0;i<order.length;i++)sorted.set(data.subarray(order[i]*16,order[i]*16+16),i*16);
+  gl.bindBuffer(gl.ARRAY_BUFFER,instances);gl.bufferData(gl.ARRAY_BUFFER,sorted,gl.DYNAMIC_DRAW);
+  for(const [key,value] of Object.entries({eye,right,up,forward}))gl.uniform3fv(uniforms[key],value);gl.uniform1f(uniforms.tanFov,tanFov);gl.uniform1f(uniforms.aspect,w/h);gl.uniform1i(uniforms.roles,$('roles').checked);gl.uniform3fv(uniforms.visible,['scene','optical','unresolved'].map(k=>+$ (k).checked));
+  gl.clearColor(.03,.045,.065,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArraysInstanced(gl.TRIANGLES,0,6,meta.count);
+  const error=gl.getError();if(error!==gl.NO_ERROR)throw Error('WebGL 오류 '+error);
+  const visibleCount=($('scene').checked?meta.counts.scene:0)+($('optical').checked?meta.counts.optical:0)+($('unresolved').checked?meta.counts.unresolved:0);
+  $('status').textContent=`표시 대상 ${visibleCount.toLocaleString()}개 / 전체 ${meta.count.toLocaleString()}개 Gaussian · 학습된 2D surfel · 근사 형상 뷰어`;
+ }
+ function redraw(){if(!pending){pending=true;requestAnimationFrame(draw);}}
+ function preset(name){const c=meta.cameras[name];eye=c.eye.slice();up=c.up.slice();worldUp=c.up.slice();pivot=add(eye,mul(c.forward,c.distance));tanFov=c.tan_fov;redraw();}
+ for(const name of Object.keys(meta.cameras).sort()){$('camera').add(new Option(name+(name==='0000'?' · 평가 시점':''),name));}
+ $('camera').value=meta.cameras['0000']?'0000':Object.keys(meta.cameras)[0];preset($('camera').value);$('camera').onchange=()=>preset($('camera').value);
+ $('fit').onclick=()=>{pivot=mul(add(...meta.bounds),.5);const radius=Math.hypot(...sub(meta.bounds[1],meta.bounds[0]))*.5;eye=sub(pivot,mul(norm(sub(pivot,eye)),radius/Math.sin(Math.atan(tanFov))));redraw();};
+ ['scene','optical','unresolved','roles'].forEach(k=>$(k).onchange=redraw);
+ let drag=null;canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,pan:e.shiftKey||e.button===2};canvas.setPointerCapture(e.pointerId);};
+ canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+ canvas.onpointermove=e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;drag.x=e.clientX;drag.y=e.clientY;const f=norm(sub(pivot,eye)),r=norm(cross(f,up));if(drag.pan){const s=2*Math.hypot(...sub(eye,pivot))*tanFov/canvas.clientHeight,move=add(mul(r,-dx*s),mul(up,dy*s));eye=add(eye,move);pivot=add(pivot,move);}else{let v=rotate(sub(eye,pivot),worldUp,-dx*.006);let u=rotate(up,worldUp,-dx*.006);const right=norm(cross(norm(mul(v,-1)),u));v=rotate(v,right,-dy*.006);up=rotate(u,right,-dy*.006);eye=add(pivot,v);}redraw();};
+ canvas.addEventListener('wheel',e=>{e.preventDefault();eye=add(pivot,mul(sub(eye,pivot),Math.exp(Math.max(-.5,Math.min(.5,e.deltaY*.001)))));redraw();},{passive:false});
+ new ResizeObserver(redraw).observe(canvas);
+}
+start().catch(e=>{$('status').textContent='오류: '+e.message;console.error(e);});
+</script></html>
