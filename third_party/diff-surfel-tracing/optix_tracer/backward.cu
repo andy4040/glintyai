@@ -5,6 +5,7 @@
 
 #include "params.h"
 #include "auxiliary.h"
+#include "sh_direction.h"
 #include "source_surface_filter.h"
 
 
@@ -25,9 +26,10 @@ __device__ float3 computeColorFromSH(int deg, const float3* sh, const float3& di
 
 	if (deg > 0)
 	{
-		float x = dir.x;
-		float y = dir.y;
-		float z = dir.z;
+		const float3 unit = normalize_sh_direction(dir).unit;
+		float x = unit.x;
+		float y = unit.y;
+		float z = unit.z;
 		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
 
 		if (deg > 1)
@@ -78,9 +80,10 @@ __device__ void computeColorFromSHBackward(int deg, const float3* sh, const floa
 	float3 dRGBdx = make_float3(0, 0, 0);
 	float3 dRGBdy = make_float3(0, 0, 0);
 	float3 dRGBdz = make_float3(0, 0, 0);
-	float x = dir.x;
-	float y = dir.y;
-	float z = dir.z;
+	const SHDirection direction = normalize_sh_direction(dir);
+	float x = direction.unit.x;
+	float y = direction.unit.y;
+	float z = direction.unit.z;
 
 	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
@@ -162,8 +165,11 @@ __device__ void computeColorFromSHBackward(int deg, const float3* sh, const floa
 			}
 		}
 	}
-	// The view direction may be an input to the computation
-	dL_ddir = make_float3(dot(dRGBdx, dL_dRGB), dot(dRGBdy, dL_dRGB), dot(dRGBdz, dL_dRGB));
+	// Transform only the SH contribution from dL/du to dL/dd. Intersection
+	// gradients have already been accumulated in dL_ddir and must be preserved.
+	const float3 sh_gradient = make_float3(
+		dot(dRGBdx, dL_dRGB), dot(dRGBdy, dL_dRGB), dot(dRGBdz, dL_dRGB));
+	dL_ddir += sh_direction_backward(direction, sh_gradient);
 }
 
 

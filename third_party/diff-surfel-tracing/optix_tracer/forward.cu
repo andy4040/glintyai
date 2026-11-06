@@ -5,6 +5,7 @@
 
 #include "params.h"
 #include "auxiliary.h"
+#include "sh_direction.h"
 #include "source_surface_filter.h"
 
 
@@ -25,9 +26,10 @@ __device__ float3 computeColorFromSH(int deg, const float3* sh, const float3& di
 
 	if (deg > 0)
 	{
-		float x = dir.x;
-		float y = dir.y;
-		float z = dir.z;
+		const float3 unit = normalize_sh_direction(dir).unit;
+		float x = unit.x;
+		float y = unit.y;
+		float z = unit.z;
 		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
 
 		if (deg > 1)
