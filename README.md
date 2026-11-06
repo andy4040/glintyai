@@ -268,6 +268,25 @@ mode, so a shared-only checkpoint does not render the untrained separate set.
 primary reflection path. Their sum is `reflection_weighted.png`; the existing
 secondary reflection output remains separate.
 
+For a checkpoint with separate reflection disabled, export an actual-render
+shared-reflection ON/OFF viewer (serve the output directory over HTTP):
+
+```bash
+python -m glint.compare_shared_reflection \
+  --config configs/exps/glint/3d-front-t/scene_3.yaml \
+  --data-root /path/to/3d-front-t/scene_3 \
+  --checkpoints results/shared-reflection-first/scene_3/checkpoints/step_004000.pt \
+  --output-dir results/reflection-comparison --view-indices 0 4 8 12 16 20
+```
+
+Pass multiple checkpoints to compare stages. OFF removes both primary and
+secondary shared-reflection radiance while keeping geometry, material weights,
+interface and transmission contributions fixed. It does not retrain or
+renormalize the remaining paths. The viewer defaults to the latest checkpoint
+and original brightness; its optional gain affects only the reflection-component
+preview. Step 3,000 checkpoints may be dark immediately after opacity reset;
+the stage-boundary checkpoint at 2,999 records the state before that reset.
+
 Activate the `splat` environment and run commands from the repository root.
 
 ### Ref-DL3DV
