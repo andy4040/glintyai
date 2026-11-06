@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from glint.checkpoint import GlintGaussianSet
 from glint.dataset import GlintBatch, GlintDataset, make_glint_dataloader
 from glint.losses import ssim_loss
 from glint.model import GlintStageSchedule, GlintTrainingModel, TrainingStage
@@ -888,6 +889,12 @@ class GlintTrainer:
             name: refiner.stabilize_covariance()
             for name, refiner in self.refiners.items()
         }
+        self._transmission_restart_applied = False
+        self._transmission_initial_state = (
+            {f"initial.{key}": value.detach().cpu().clone()
+             for key, value in model.transmission.state_dict().items()}
+            if schedule.transmission_pause_start is not None else None
+        )
         if any(
             int(stats["scale_clamped"]) > 0
             for stats in initial_covariance_stats.values()
@@ -916,11 +923,41 @@ class GlintTrainer:
         active: list[str] = []
         if self.schedule.train_interface(step):
             active.append("interface")
-        if step >= self.schedule.transmission_start:
+        if self.schedule.train_transmission(step):
             active.append("transmission")
         if self.schedule.train_reflection(step):
             active.append("reflection")
         return tuple(active)
+
+    def _prepare_material_stage(self, step: int) -> None:
+        """Reset only G_trans once; keep the retained interface materials trainable."""
+        boundary = self.schedule.transmission_pause_start
+        if boundary is None:
+            return
+        if step >= boundary and not self._transmission_restart_applied:
+            if self._transmission_initial_state is None:
+                raise ValueError("Material-first restart requires the saved initial transmission state")
+            previous = self.model.transmission
+            config = self.refiners["transmission"].config
+            self.model.transmission = GlintGaussianSet(
+                self._transmission_initial_state, "initial", role="transmission", trainable=True,
+            ).to(self.device)
+            self.optimizers["transmission"] = _make_optimizers(
+                self.model, scene_scale=self.config.scene_scale,
+            )["transmission"]
+            self.refiners["transmission"] = GlintRefiner(
+                self.model.transmission, self.optimizers["transmission"], config,
+                scene_scale=self.config.scene_scale,
+            )
+            # Drop the BVH of the discarded set, not any interface parameters.
+            self.tracer._states.pop(id(previous), None)
+            self._transmission_restart_applied = True
+            self._transmission_initial_state = None
+            print(f"[material-first] step={step} reset transmission geometry/color/Adam/refinement; interface retained")
+        # Pretrained materials are initial values, not fixed targets. Continue
+        # updating them with interface geometry/color during shared reflection.
+        self.model.interface._transmission_coeff.requires_grad_(True)
+        self.model.interface._specular.requires_grad_(True)
 
     def _zero_grad(self) -> None:
         for optimizers in self.optimizers.values():
@@ -941,10 +978,11 @@ class GlintTrainer:
         )
 
     def _update_learning_rates(self, step: int) -> None:
-        progress = min(step / self.config.position_lr_max_steps, 1.0)
-        gamma = 0.01**progress
         base = 1.6e-4 * self.config.scene_scale
-        for optimizers in self.optimizers.values():
+        for name, optimizers in self.optimizers.items():
+            effective_step = self.schedule.transmission_training_step(step) if name == "transmission" else step
+            progress = min(effective_step / self.config.position_lr_max_steps, 1.0)
+            gamma = 0.01**progress
             optimizers["means"].param_groups[0]["lr"] = base * gamma
 
     def _update_sh_degree(self, step: int) -> None:
@@ -958,7 +996,10 @@ class GlintTrainer:
             ("transmission", self.model.transmission),
             ("reflection", self.model.reflection),
         ):
-            age = max(0, step - starts[name])
+            if name == "transmission" and self.schedule.transmission_paused(step):
+                continue
+            effective_step = self.schedule.transmission_training_step(step) if name == "transmission" else step
+            age = max(0, effective_step - starts[name])
             maximum = int(math.sqrt(gaussian_set.get_features.shape[1]) - 1)
             degree = min(age // self.config.sh_degree_interval, maximum)
             gaussian_set.active_sh_degree.fill_(degree)
@@ -1592,6 +1633,8 @@ class GlintTrainer:
                 name: refiner.state_dict() for name, refiner in self.refiners.items()
             },
             "schedule": asdict(self.schedule),
+            "transmission_restart_applied": getattr(self, "_transmission_restart_applied", False),
+            "transmission_initial_state": getattr(self, "_transmission_initial_state", None),
         }
         checkpoint_dir = self.output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1608,6 +1651,14 @@ class GlintTrainer:
         legacy_steps_per_epoch: int = 1,
     ) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
+        self._transmission_restart_applied = bool(payload.get("transmission_restart_applied", False))
+        initial_state = payload.get("transmission_initial_state")
+        self._transmission_initial_state = (
+            {key: value.cpu() for key, value in initial_state.items()} if initial_state is not None else None
+        )
+        if (self.schedule.transmission_pause_start is not None
+                and not self._transmission_restart_applied and self._transmission_initial_state is None):
+            raise ValueError("Cannot resume material-first experiment without its initial transmission state")
         for set_name, optimizer_states in payload.get("optimizers", {}).items():
             for name, state in optimizer_states.items():
                 self.optimizers[set_name][name].load_state_dict(state)
@@ -1663,6 +1714,7 @@ class GlintTrainer:
                     print(f"saved stage boundary {path}")
                 print(f"[stage] step={step} -> {stage}")
                 last_stage = stage
+            self._prepare_material_stage(step)
             batch = next(batches)
             sample = batch.samples[0].to(self.device)
             self._freeze_interface_geometry_if_needed(step)
@@ -1677,7 +1729,7 @@ class GlintTrainer:
                 # Match released GLINT: transport losses may update interface
                 # normals/materials, but ray-origin depth is detached.
                 detach_surface_depth=True,
-                render_transmission_direct=step >= self.schedule.transmission_start,
+                render_transmission_direct=self.schedule.train_transmission(step),
             )
             self.refiners["interface"].retain_interface_gradient(output)
             loss, scalars = self._loss(output, sample, step)
@@ -1714,7 +1766,7 @@ class GlintTrainer:
                     output.transmission_trace
                 )
                 refinement_stats["transmission"] = self.refiners["transmission"].step(
-                    step
+                    self.schedule.transmission_training_step(step)
                 )
             if "reflection" in active_sets:
                 self.refiners["reflection"].accumulate_trace(output.extra_reflection_trace)

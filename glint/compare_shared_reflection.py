@@ -51,7 +51,7 @@ figcaption{padding:10px 0;color:#c2d2e2}.sub{display:grid;grid-template-columns:
 <figure><img id="shared" alt="최종 영상에 더해지는 공유 반사 기여분"><figcaption>공유 반사 기여분 (1차 + 2차) · 표시 밝기
 <select id="gain"><option value="1">1배 · 원래 밝기</option><option value="4">4배 · 확인용</option><option value="10">10배 · 확인용</option></select>
 <br>밝기 증폭은 이 성분 이미지에만 적용됩니다. 위 ON/OFF 영상은 보정하지 않습니다.</figcaption></figure></div>
-<p>3,000스텝 저장본은 정기 opacity 초기화 직후라 어둡습니다. 2,999스텝은 초기화 직전이며 아직 투과 경로가 꺼져 있습니다. 4,000스텝에는 투과도 학습 중입니다.</p>
+<p>학습 단계는 각 체크포인트에 저장된 일정에 따라 표시합니다.</p>
 <p><a href="manifest.json">렌더링 정보</a></p></main>
 <script>
 'use strict';
@@ -64,8 +64,8 @@ function update(){
  $('main').src=base+(on?'on.png':'off.png');$('gt').src=base+'gt.png';$('shared').src=base+'shared.png';
  $('state').textContent=on?'ON':'OFF';
  $('caption').textContent=`${run.step.toLocaleString()}스텝 · 시점 ${view.camera} · 공유 반사 ${on?'ON':'OFF'}`;
- $('notice').textContent=run.step===3000?'주의: 정기 opacity 초기화 직후 저장된 체크포인트입니다.':
-  run.step<3000?'인터페이스 + 공유 반사 단계 · 투과 비활성':'인터페이스 + 공유 반사 + 투과 단계';
+ $('notice').textContent=run.stage==='shared_reflection_only'?
+  '인터페이스 + 공유 반사 단계 · 투과 비활성':'인터페이스 + 공유 반사 + 투과 단계';
 }
 function selectRun(){
  const old=$('camera').selectedOptions[0]?.textContent;

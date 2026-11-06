@@ -500,7 +500,11 @@ def render_glint_transport(
                 # Before G_trans is enabled, keep the non-reflected energy in
                 # the interface path. An unavailable transmission path must
                 # not darken the image or train transparency to hide RGB error.
-                transparency=(transparency if transmission_enabled else torch.zeros_like(transparency)),
+                # Material-first experiments explicitly retain the learned
+                # transparency while omitting transmission radiance. This is
+                # intentionally not the legacy opaque shared-first stage.
+                transparency=(transparency if transmission_enabled or checkpoint.preserve_transparency_without_transmission
+                              else torch.zeros_like(transparency)),
                 specularity=specularity,
                 secondary_reflection_rgb=(
                     None

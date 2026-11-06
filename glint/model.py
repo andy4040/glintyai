@@ -40,8 +40,17 @@ class GlintStageSchedule:
     source_depth_tolerance: float = 0.005
     source_max_distance: float = 0.02
     source_normal_cosine: float = 0.95
+    transmission_pause_start: int | None = None
+    transmission_resume: int | None = None
 
     def __post_init__(self) -> None:
+        if (self.transmission_pause_start is None) != (self.transmission_resume is None):
+            raise ValueError("transmission_pause_start and transmission_resume must be set together")
+        if self.transmission_pause_start is not None:
+            if not self.transmission_start < self.transmission_pause_start < self.transmission_resume:
+                raise ValueError("Require transmission_start < transmission_pause_start < transmission_resume")
+            if self.shared_reflection_start != self.transmission_pause_start or self.separate_reflection_enabled:
+                raise ValueError("Material pretraining requires shared reflection at the pause boundary and separate reflection disabled")
         if self.transmission_start < 0:
             raise ValueError("transmission_start must be non-negative")
         if self.reflection_start < 0:
@@ -69,8 +78,21 @@ class GlintStageSchedule:
         if self.train_reflection(step):
             return "full"
         if self.shared_reflection_start is not None and step >= self.shared_reflection_start:
-            return "shared_reflection_only" if step < self.transmission_start else "shared_reflection"
+            return "shared_reflection" if self.train_transmission(step) else "shared_reflection_only"
         return "interface" if step < self.transmission_start else "transmission"
+
+    def transmission_paused(self, step: int) -> bool:
+        return (self.transmission_pause_start is not None
+                and self.transmission_pause_start <= step < self.transmission_resume)
+
+    def train_transmission(self, step: int) -> bool:
+        return step >= self.transmission_start and not self.transmission_paused(step)
+
+    def transmission_training_step(self, step: int) -> int:
+        """Restart transmission's LR/SH/refinement clock with its fresh set."""
+        if self.transmission_resume is not None and step >= self.transmission_resume:
+            return step - self.transmission_resume + self.transmission_start
+        return step
 
     def train_reflection(self, step: int) -> bool:
         return self.separate_reflection_enabled and step >= self.reflection_start
@@ -269,6 +291,8 @@ class GlintTrainingModel(nn.Module):
             source_depth_tolerance=schedule.source_depth_tolerance if schedule else 0.005,
             source_max_distance=schedule.source_max_distance if schedule else 0.02,
             source_normal_cosine=schedule.source_normal_cosine if schedule else 0.95,
+            preserve_transparency_without_transmission=(schedule is not None and step is not None
+                                                       and schedule.transmission_paused(step)),
         )
 
     def legacy_state_dict(self) -> dict[str, Tensor]:

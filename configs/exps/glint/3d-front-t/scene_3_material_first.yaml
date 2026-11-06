@@ -1,0 +1,18 @@
+configs:
+    - configs/exps/glint/3d-front-t/scene_3.yaml
+
+model_cfg:
+    sampler_cfg:
+        render_transmission_start_iter: 1000
+        shared_reflection_start_iter: 3000
+        transmission_pause_start: 3000
+        transmission_resume: 6000
+        separate_reflection_enabled: false
+        # Preserve the interface opacity and learned material across phase boundaries.
+        opacity_reset_interval: 100000
+    supervisor_cfg:
+        trans_guidance_loss_start_iter: 1000
+
+runner_cfg:
+    epochs: 18
+    ep_iter: 500

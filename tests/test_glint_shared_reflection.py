@@ -163,7 +163,8 @@ def test_shared_tracing_skips_launch_plane_and_hits_scene():
 
 
 @pytest.mark.parametrize("omit_environment_sets", [False, True])
-def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_environment_sets):
+@pytest.mark.parametrize("preserve_material", [False, True])
+def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_environment_sets, preserve_material):
     """The new warm-up uses the interface for both direct and reflected color."""
     interface = _gaussian_set(
         [[0, 0, 2], [0, 0, 0]], role="interface", opacity=.9,
@@ -180,6 +181,7 @@ def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_
         bg_color=torch.zeros(3), trans_env_bg_color=torch.zeros(3),
         env_bg_color=torch.zeros(3), epoch=1_000, shared_reflection=True,
         separate_reflection_enabled=False, render_stage="shared_reflection_only",
+        preserve_transparency_without_transmission=preserve_material,
     )
     raster_calls = []
 
@@ -235,10 +237,15 @@ def test_shared_only_render_has_no_transmission_or_extra_path(monkeypatch, omit_
     # unavailable transmission weight to diffuse radiance.
     torch.testing.assert_close(output.trans_map, torch.full_like(output.trans_map, .7))
     torch.testing.assert_close(output.render, output.dif_render + output.ref_render)
+    diffuse_weight = (1 - (.2 + .8 * .04)) * (.3 if preserve_material else 1.)
+    torch.testing.assert_close(output.dif_render.flatten(), colors[0] * diffuse_weight)
     output.render.sum().backward()
     assert interface._features_dc.grad[0].abs().sum() > 0  # direct path
     assert interface._features_dc.grad[1].abs().sum() > 0  # reflected path
     assert interface._specular.grad.abs().sum() > 0
-    assert interface._transmission_coeff.grad is None
+    if preserve_material:
+        assert interface._transmission_coeff.grad.abs().sum() > 0
+    else:
+        assert interface._transmission_coeff.grad is None
     for gaussian_set in (transmission, extra):
         assert all(parameter.grad is None for parameter in gaussian_set.parameter_map().values())

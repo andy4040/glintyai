@@ -179,6 +179,8 @@ def main() -> None:
     parser.add_argument("--ratio", type=float)
     parser.add_argument("--max-steps", type=_positive_int)
     parser.add_argument("--transmission-start", type=int)
+    parser.add_argument("--transmission-pause-start", type=int)
+    parser.add_argument("--transmission-resume", type=int)
     parser.add_argument("--reflection-start", type=int)
     parser.add_argument(
         "--shared-reflection-start", type=int,
@@ -310,6 +312,10 @@ def main() -> None:
     else:
         interface_freeze = None
     schedule = GlintStageSchedule(
+        transmission_pause_start=(args.transmission_pause_start if args.transmission_pause_start is not None
+                                  else saved_schedule.get("transmission_pause_start", sampler.get("transmission_pause_start"))),
+        transmission_resume=(args.transmission_resume if args.transmission_resume is not None
+                             else saved_schedule.get("transmission_resume", sampler.get("transmission_resume"))),
         transmission_start=transmission_start,
         reflection_start=reflection_start,
         separate_reflection_enabled=(args.separate_reflection if args.separate_reflection is not None

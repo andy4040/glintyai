@@ -436,6 +436,37 @@ specularity, conditional material transparency, the composited transparency
 gate, diffuse/transmission/reflection contributions, guidance masks, and
 combined visualization panels.
 
+## Material-first shared-reflection experiment (scene 3)
+
+```bash
+DATA_ROOT=/path/to/3D-FRONT-T/scene_3 bash scripts/train_material_first.sh
+```
+
+This opt-in experiment runs 9,000 updates: interface at `[0,1000)`, interface
+and transmission at `[1000,3000)`, interface and shared reflection at
+`[3000,6000)`, then all three paths at `[6000,9000)`. Separate reflection is
+disabled throughout. At step 3000, the entire interface is retained; only
+transmission is restored to its initial SfM state with fresh Adam and
+refinement state. The original learned transmission remains in the step 2999
+checkpoint. Resuming a new experiment checkpoint preserves this one-time reset.
+
+During the middle phase, interface transparency and specularity parameters
+continue training along with interface geometry and SH color. The pretrained
+material values are retained as initialization, not frozen targets. Learned
+transparency remains in the composition; transmission is neither rendered nor
+optimized. Thus missing transmitted radiance is deliberately **not** reassigned
+to interface diffuse radiance. This is an experimental ablation, not a claim
+that full-image RGB supervision isolates reflection. At step 6000, the fresh
+transmission set joins the ongoing interface/material training; its LR, SH, and
+refinement clocks restart from the initial transmission training age.
+
+The recipe starts material guidance at step 1000 and moves interface opacity/
+transparency resets beyond the run so they cannot erase the warm-up material.
+Other losses retain their scene configuration (including transmission's direct
+RGB supervision and LPIPS starting at 30000, outside this short experiment).
+Stage-boundary and final checkpoints are `step_000999.pt`, `step_002999.pt`,
+`step_005999.pt`, and `step_008999.pt`; regular saves also occur every 1000 steps.
+
 ## Citation
 
 ```bibtex
