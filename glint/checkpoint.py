@@ -210,15 +210,15 @@ def load_glint_checkpoint(
     shared_start = schedule.get("shared_reflection_start")
     step = int(payload.get("step", payload.get("epoch", 0)))
     render_stage = None
-    if shared_start is not None:
-        if step < schedule.get("transmission_start", 1000):
-            render_stage = "interface"
-        elif step < shared_start:
-            render_stage = "transmission"
-        elif step < schedule.get("reflection_start", 3000):
-            render_stage = "shared_reflection"
-        else:
-            render_stage = "full"
+    separate_enabled = True
+    if schedule:
+        # Import at load time: model defines the schedule and imports this module.
+        # Use the same stage rules for training and checkpoint/viewer rendering.
+        from glint.model import GlintStageSchedule
+
+        curriculum = GlintStageSchedule(**schedule)
+        render_stage = curriculum.stage(step)
+        separate_enabled = curriculum.train_reflection(step)
     return GlintCheckpoint(
         pcd=build("pcd", "interface"),
         env=build("env", "reflection"),
@@ -228,7 +228,7 @@ def load_glint_checkpoint(
         trans_env_bg_color=background("sampler.trans_env_bg_color"),
         epoch=payload.get("epoch") if isinstance(payload, Mapping) else None,
         shared_reflection=shared_start is not None and step >= shared_start,
-        separate_reflection_enabled=shared_start is None or step >= schedule.get("reflection_start", 3000),
+        separate_reflection_enabled=separate_enabled,
         reflection_ray_offset=float(schedule.get("reflection_ray_offset", 1e-4)),
         render_stage=render_stage,
         source_surface_filter=bool(schedule.get("source_surface_filter", False)),

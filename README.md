@@ -167,6 +167,24 @@ provided with `--data-root`; no source or YAML edit is required.
 
 ### Optional shared-interface reflection curriculum
 
+To test shared reflection before enabling transmission, with the separate
+reflection set disabled throughout, run:
+
+```bash
+DATA_ROOT=/path/to/3d-front-t/scene_3 bash scripts/train_shared_reflection_first.sh scene_3
+```
+
+This experiment performs 6,000 updates: interface at steps 0–999,
+interface plus shared reflection at 1,000–2,999, then interface plus shared
+reflection plus transmission at 3,000–5,999. The shared-only stage does not
+render or optimize transmission; its unavailable transmission weight stays
+in the interface path. `--no-separate-reflection` disables separate tracing,
+optimization and refinement even if training is later extended. The setting
+and render stage survive checkpoint loading. Start from fresh initialization
+or an interface-only checkpoint to avoid reusing already learned transmission.
+Checkpoints are saved every 1,000 steps, at stage boundaries (999 and 2,999),
+and after the final update (`step_005999.pt` and `latest.pt`).
+
 Enable the new path with both `--shared-reflection-start 3000` and
 `--reflection-start 6000`. Omitting `--shared-reflection-start` preserves the
 original three-stage renderer and optimizer schedule.

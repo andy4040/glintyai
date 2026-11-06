@@ -918,7 +918,7 @@ class GlintTrainer:
             active.append("interface")
         if step >= self.schedule.transmission_start:
             active.append("transmission")
-        if step >= self.schedule.reflection_start:
+        if self.schedule.train_reflection(step):
             active.append("reflection")
         return tuple(active)
 
@@ -1658,6 +1658,9 @@ class GlintTrainer:
         for step in range(self.step, self.config.max_steps):
             stage = self.schedule.stage(step)
             if stage != last_stage:
+                if last_stage is not None:
+                    path = self.save(step - 1)
+                    print(f"saved stage boundary {path}")
                 print(f"[stage] step={step} -> {stage}")
                 last_stage = stage
             batch = next(batches)
@@ -1674,7 +1677,7 @@ class GlintTrainer:
                 # Match released GLINT: transport losses may update interface
                 # normals/materials, but ray-origin depth is detached.
                 detach_surface_depth=True,
-                render_transmission_direct=stage != "interface",
+                render_transmission_direct=step >= self.schedule.transmission_start,
             )
             self.refiners["interface"].retain_interface_gradient(output)
             loss, scalars = self._loss(output, sample, step)

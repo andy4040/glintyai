@@ -22,7 +22,7 @@ from glint.checkpoint import (
 )
 
 
-TrainingStage = Literal["interface", "transmission", "shared_reflection", "full"]
+TrainingStage = Literal["interface", "transmission", "shared_reflection_only", "shared_reflection", "full"]
 _SH_C0 = 0.28209479177387814
 
 
@@ -34,6 +34,7 @@ class GlintStageSchedule:
     reflection_start: int = 3_000
     interface_freeze: int | None = None
     shared_reflection_start: int | None = None
+    separate_reflection_enabled: bool = True
     reflection_ray_offset: float = 1e-4
     source_surface_filter: bool = False
     source_depth_tolerance: float = 0.005
@@ -43,13 +44,17 @@ class GlintStageSchedule:
     def __post_init__(self) -> None:
         if self.transmission_start < 0:
             raise ValueError("transmission_start must be non-negative")
-        if self.reflection_start < self.transmission_start:
+        if self.reflection_start < 0:
+            raise ValueError("reflection_start must be non-negative")
+        if self.separate_reflection_enabled and self.reflection_start < self.transmission_start:
             raise ValueError("reflection_start must not precede transmission_start")
         if self.interface_freeze is not None and self.interface_freeze < 0:
             raise ValueError("interface_freeze must be non-negative or None")
         if self.shared_reflection_start is not None:
-            if not self.transmission_start <= self.shared_reflection_start < self.reflection_start:
-                raise ValueError("Require transmission_start <= shared_reflection_start < reflection_start")
+            if self.shared_reflection_start < 0:
+                raise ValueError("shared_reflection_start must be non-negative")
+            if self.separate_reflection_enabled and self.shared_reflection_start >= self.reflection_start:
+                raise ValueError("shared_reflection_start must precede reflection_start when separate reflection is enabled")
         if not np.isfinite(self.reflection_ray_offset) or self.reflection_ray_offset <= 0:
             raise ValueError("reflection_ray_offset must be finite and positive")
         for value in (self.source_depth_tolerance, self.source_max_distance):
@@ -61,13 +66,14 @@ class GlintStageSchedule:
             raise ValueError("Source filtering requires shared reflection")
 
     def stage(self, step: int) -> TrainingStage:
-        if step < self.transmission_start:
-            return "interface"
-        if step < self.reflection_start:
-            if self.shared_reflection_start is not None and step >= self.shared_reflection_start:
-                return "shared_reflection"
-            return "transmission"
-        return "full"
+        if self.train_reflection(step):
+            return "full"
+        if self.shared_reflection_start is not None and step >= self.shared_reflection_start:
+            return "shared_reflection_only" if step < self.transmission_start else "shared_reflection"
+        return "interface" if step < self.transmission_start else "transmission"
+
+    def train_reflection(self, step: int) -> bool:
+        return self.separate_reflection_enabled and step >= self.reflection_start
 
     def train_interface(self, step: int) -> bool:
         return self.interface_freeze is None or step < self.interface_freeze
@@ -256,7 +262,8 @@ class GlintTrainingModel(nn.Module):
             epoch=step,
             shared_reflection=(schedule is not None and schedule.shared_reflection_start is not None
                                and step is not None and step >= schedule.shared_reflection_start),
-            separate_reflection_enabled=(schedule is None or step is None or step >= schedule.reflection_start),
+            separate_reflection_enabled=(schedule is None or step is None or schedule.train_reflection(step)),
+            render_stage=schedule.stage(step) if schedule is not None and step is not None else None,
             reflection_ray_offset=schedule.reflection_ray_offset if schedule else 1e-4,
             source_surface_filter=schedule.source_surface_filter if schedule else False,
             source_depth_tolerance=schedule.source_depth_tolerance if schedule else 0.005,

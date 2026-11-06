@@ -182,7 +182,11 @@ def main() -> None:
     parser.add_argument("--reflection-start", type=int)
     parser.add_argument(
         "--shared-reflection-start", type=int,
-        help="Enable reflection through interface Gaussians at this step, before --reflection-start.",
+        help="Enable reflection through interface Gaussians; may precede --transmission-start.",
+    )
+    parser.add_argument(
+        "--separate-reflection", action=argparse.BooleanOptionalAction, default=None,
+        help="Enable the separate reflection set; --no-separate-reflection disables its rendering and training.",
     )
     parser.add_argument(
         "--reflection-ray-offset", type=float,
@@ -308,6 +312,8 @@ def main() -> None:
     schedule = GlintStageSchedule(
         transmission_start=transmission_start,
         reflection_start=reflection_start,
+        separate_reflection_enabled=(args.separate_reflection if args.separate_reflection is not None
+                                     else bool(saved_schedule.get("separate_reflection_enabled", sampler.get("separate_reflection_enabled", True)))),
         interface_freeze=interface_freeze,
         shared_reflection_start=(args.shared_reflection_start if args.shared_reflection_start is not None
                                  else saved_schedule.get("shared_reflection_start", sampler.get("shared_reflection_start_iter"))),

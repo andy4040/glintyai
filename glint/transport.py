@@ -345,7 +345,7 @@ def render_glint_transport(
     checkpoint: GlintCheckpoint,
     tracer: GlintRayTracer | None,
     *,
-    stage: Literal["interface", "transmission", "shared_reflection", "full"] | None = None,
+    stage: Literal["interface", "transmission", "shared_reflection_only", "shared_reflection", "full"] | None = None,
     depth_ratio: float = 0.0,
     scaling_modifier: float = 1.0,
     f0: float = 0.04,
@@ -359,13 +359,16 @@ def render_glint_transport(
         stage = checkpoint.render_stage or (
             "shared_reflection" if checkpoint.shared_reflection and not checkpoint.separate_reflection_enabled else "full"
         )
-    if stage not in {"interface", "transmission", "shared_reflection", "full"}:
+    if stage not in {"interface", "transmission", "shared_reflection_only", "shared_reflection", "full"}:
         raise ValueError(f"Unknown GLINT training stage: {stage}")
     if checkpoint.pcd is None:
         raise ValueError("GLINT transport requires the interface set")
-    if stage != "interface" and (checkpoint.trans_env is None or tracer is None):
+    transmission_enabled = stage in {"transmission", "shared_reflection", "full"}
+    if stage != "interface" and tracer is None:
+        raise ValueError(f"The {stage} stage requires a tracer")
+    if transmission_enabled and checkpoint.trans_env is None:
         raise ValueError(
-            f"The {stage} stage requires transmission Gaussians and a tracer"
+            f"The {stage} stage requires transmission Gaussians"
         )
     if stage == "full" and checkpoint.env is None:
         raise ValueError("The full stage requires reflection Gaussians")
@@ -411,29 +414,32 @@ def render_glint_transport(
         fresnel = schlick_fresnel(camera_rays.directions, normals, f0=f0)
         energy_sum = torch.ones_like(transparency)
     else:
-        assert tracer is not None and checkpoint.trans_env is not None
-        need_transmission_direct = render_transmission_direct or (
-            stage in {"shared_reflection", "full"} and render_secondary_reflection
-        )
-        if need_transmission_direct:
-            # GLINT rasterizes G_trans from the target camera in addition to
-            # tracing it along transmitted rays.  The direct render supplies
-            # the normal/depth maps used by plausibility supervision and by
-            # the original TRANS_NORMAL visualization.
-            transmission_direct = render_glint_camera(
-                camera,
-                checkpoint.trans_env,
-                pipe,
-                checkpoint.trans_env_bg_color,
-                scaling_modifier=scaling_modifier,
-                device=str(camera.K.device),
+        assert tracer is not None
+        if transmission_enabled:
+            assert checkpoint.trans_env is not None
+            need_transmission_direct = render_transmission_direct or (
+                stage in {"shared_reflection", "full"} and render_secondary_reflection
             )
-        transmission_trace = tracer.trace(
-            checkpoint.trans_env,
-            transmission_rays,
-            background=checkpoint.trans_env_bg_color,
-        )
+            if need_transmission_direct:
+                # GLINT rasterizes G_trans from the target camera in addition to
+                # tracing it along transmitted rays.  The direct render supplies
+                # the normal/depth maps used by plausibility supervision and by
+                # the original TRANS_NORMAL visualization.
+                transmission_direct = render_glint_camera(
+                    camera,
+                    checkpoint.trans_env,
+                    pipe,
+                    checkpoint.trans_env_bg_color,
+                    scaling_modifier=scaling_modifier,
+                    device=str(camera.K.device),
+                )
+            transmission_trace = tracer.trace(
+                checkpoint.trans_env,
+                transmission_rays,
+                background=checkpoint.trans_env_bg_color,
+            )
         if stage == "transmission":
+            assert transmission_trace is not None
             # GLINT already reserves the Fresnel/specular reflection share
             # during transmission warm-up even though G_refl is not rendered
             # yet.  Re-normalizing the other two paths here creates a weight
@@ -455,7 +461,7 @@ def render_glint_transport(
                 checkpoint,
                 tracer,
                 reflection_rays,
-                shared=checkpoint.shared_reflection or stage == "shared_reflection",
+                shared=checkpoint.shared_reflection or stage in {"shared_reflection_only", "shared_reflection"},
                 separate=stage == "full",
                 source_surface=make_source_surface_filter(camera_rays, reflection_rays, normals, checkpoint),
             )
@@ -463,6 +469,7 @@ def render_glint_transport(
             if (
                 render_secondary_reflection
                 and transmission_direct is not None
+                and transmission_trace is not None
                 and transmission_trace.specular is not None
             ):
                 direct_depth = _chw_to_hwc(transmission_direct.surf_depth)
@@ -485,10 +492,15 @@ def render_glint_transport(
             composition = compose_glint_radiance(
                 interface_rgb=interface_rgb,
                 reflection_rgb=reflection_trace.rgb,
-                transmission_rgb=transmission_trace.rgb,
+                transmission_rgb=(
+                    transmission_trace.rgb if transmission_trace is not None else zero_rgb
+                ),
                 view_directions=camera_rays.directions,
                 normals=normals,
-                transparency=transparency,
+                # Before G_trans is enabled, keep the non-reflected energy in
+                # the interface path. An unavailable transmission path must
+                # not darken the image or train transparency to hide RGB error.
+                transparency=(transparency if transmission_enabled else torch.zeros_like(transparency)),
                 specularity=specularity,
                 secondary_reflection_rgb=(
                     None
