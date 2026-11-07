@@ -32,6 +32,9 @@ from glint.visualizer import GlintVisualizer
 class GlintLossConfig:
     rgb_l1: float = 1.2
     rgb_ssim: float = 0.4
+    # Only the auxiliary appearance supervision of G_trans rendered alone.
+    # Zero retains the direct render and all geometry/material supervision.
+    transmission_rgb_aux_weight: float = 1.0
     normal_prior: float = 0.3
     normal_source: str = "diffren"
     normal_prior_start: int = 0
@@ -104,6 +107,8 @@ class GlintLossConfig:
     multi_view_samples: int = 51_200
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.transmission_rgb_aux_weight) or self.transmission_rgb_aux_weight < 0:
+            raise ValueError("transmission_rgb_aux_weight must be finite and non-negative")
         if self.normal_source not in {"diffren", "stable"}:
             raise ValueError(
                 "normal_source must be either 'diffren' or 'stable', got "
@@ -201,6 +206,8 @@ class GlintLossConfig:
         return cls(
             rgb_l1=float(supervisor.get("img_loss_weight", cls.rgb_l1)),
             rgb_ssim=float(supervisor.get("ssim_loss_weight", cls.rgb_ssim)),
+            transmission_rgb_aux_weight=float(supervisor.get(
+                "transmission_rgb_aux_weight", cls.transmission_rgb_aux_weight)),
             normal_prior=float(supervisor.get("norm_loss_weight", cls.normal_prior)),
             normal_source=str(supervisor.get("use_normal_type", cls.normal_source)),
             normal_prior_start=int(
@@ -1370,7 +1377,7 @@ class GlintTrainer:
 
         direct = getattr(output, "transmission_direct", None)
         direct_prediction = None
-        if direct is not None:
+        if direct is not None and config.transmission_rgb_aux_weight > 0:
             direct_prediction = direct.render.permute(1, 2, 0).unsqueeze(0)
             terms["transmission_rgb_l1"] = F.l1_loss(direct_prediction, target)
             terms["transmission_rgb_ssim"] = ssim_loss(
@@ -1581,8 +1588,8 @@ class GlintTrainer:
         weights = {
             "rgb_l1": config.rgb_l1,
             "rgb_ssim": config.rgb_ssim,
-            "transmission_rgb_l1": config.rgb_l1,
-            "transmission_rgb_ssim": config.rgb_ssim,
+            "transmission_rgb_l1": config.rgb_l1 * config.transmission_rgb_aux_weight,
+            "transmission_rgb_ssim": config.rgb_ssim * config.transmission_rgb_aux_weight,
             "normal_prior": config.normal_prior,
             "depth_prior": config.depth_prior,
             "normal_consistency": config.normal_consistency,
@@ -1593,7 +1600,7 @@ class GlintTrainer:
             "transmission_opacity": config.transmission_opacity,
             "plausibility": config.plausibility,
             "perceptual": config.perceptual,
-            "transmission_perceptual": config.perceptual,
+            "transmission_perceptual": config.perceptual * config.transmission_rgb_aux_weight,
             "multi_view_geo": config.multi_view * config.multi_view_geo,
             "multi_view_ncc": config.multi_view * config.multi_view_ncc,
         }

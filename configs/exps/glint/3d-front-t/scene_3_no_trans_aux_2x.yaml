@@ -1,0 +1,53 @@
+# Material-first curriculum, with every training-time schedule stretched 2x.
+# G_trans keeps joint RGB/geometry/material gradients, but no standalone RGB target.
+configs:
+    - configs/exps/glint/3d-front-t/scene_3_material_first.yaml
+
+model_cfg:
+    sampler_cfg:
+        render_transmission_start_iter: 2000
+        render_reflection_start_iter: 6000
+        shared_reflection_start_iter: 6000
+        transmission_pause_start: 6000
+        transmission_resume: 12000
+        separate_reflection_enabled: false
+        xyz_lr_scheduler:
+            max_steps: 60000
+        sh_update_iter: 2000
+        densify_from_iter: 1000
+        densify_until_iter: 42000
+        init_densification_interval: 200
+        norm_densification_interval: 1000
+        normal_prop_until_iter: 36000
+        opacity_reset_interval: 200000
+        pcd_freeze_iter: 62000
+        env_densify_from_iter: 1000
+        env_densify_until_iter: 42000
+        env_densification_interval: 1000
+        env_opacity_reset_interval: 12000
+        trans_env_densify_from_iter: 1000
+        trans_env_densify_until_iter: 42000
+        trans_env_densification_interval: 1000
+        trans_env_opacity_reset_interval: 12000
+        multi_view_every_n_iter: 20
+    supervisor_cfg:
+        transmission_rgb_aux_weight: 0.0
+        normal_cos_threshold_iter: 20000
+        normal_cos_threshold_final_iter: 62000
+        norm_smooth_loss_start_iter: 10000
+        trans_reg_loss_start_iter: 14000
+        trans_guidance_loss_start_iter: 2000
+        trans_cleanup_start_iter: 42000
+        trans_cleanup_final_iter: 62000
+        trans_env_opacity_loss_start_iter: 14000
+        trans_env_opacity_loss_until_iter: 62000
+        plausibility_loss_start_iter: 10000
+        multi_view_start_iter: 20000
+        multi_view_until_iter: 42000
+        perc_loss_start_iter: 60000
+        perc_loss_every_n_iter: 2
+
+runner_cfg:
+    epochs: 36
+    ep_iter: 500
+    log_interval: 20

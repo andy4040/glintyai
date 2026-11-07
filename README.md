@@ -1,5 +1,27 @@
 # GLINT: Modeling Scene-Scale Transparency via Gaussian Radiance Transport
 
+## Scene 3: no standalone transmission RGB, doubled curriculum
+
+`scripts/train_no_trans_aux_2x.sh` starts a fresh 18,000-update material-first
+experiment. Set `DATA_ROOT` and a new `OUTPUT_DIR`. Its configuration disables
+standalone G_trans L1/SSIM and perceptual supervision with
+`model_cfg.supervisor_cfg.transmission_rgb_aux_weight: 0.0` (legacy default: 1.0).
+Joint final-image losses, direct transmission rendering, geometry supervision,
+and trainable transparency/specularity are retained. This switch applies to
+the whole standalone appearance loss, not a detached or masked final image.
+
+| Updates (zero-based) | Active paths |
+| --- | --- |
+| 0–1,999 | Interface |
+| 2,000–5,999 | Interface + transmission |
+| 6,000–11,999 | Interface + shared reflection; transmission reset and paused |
+| 12,000–17,999 | Interface + shared reflection + fresh transmission |
+
+Separate reflection remains disabled. LR decay, SH updates, refinement clocks,
+loss activation boundaries, and save/image intervals are stretched by 2x.
+As in the original 9,000-update run, LPIPS and multi-view losses start beyond
+the experiment end; doubling the duration does not silently activate them.
+
 ## Server-side checkpoint and viewer backup
 
 `scripts/launch_archived_training.sh` launches the material-first experiment
