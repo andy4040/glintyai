@@ -63,7 +63,7 @@ class GlintLossConfig:
     transmission_opacity_start: int = 7_000
     transmission_opacity_stop: int | None = 31_000
     albedo_threshold: float = 0.05
-    basecolor_threshold: float = 0.25
+    basecolor_threshold: float = 0.25  # Legacy config compatibility; unused by guidance.
     depth_discrepancy_threshold: float = 0.005
     depth_discrepancy_relative_threshold: float = 0.005
     depth_discrepancy_margin_ratio: float = 0.5
@@ -1042,7 +1042,7 @@ class GlintTrainer:
     ) -> Tensor | None:
         config = self.loss_config
         direct = getattr(output, "transmission_direct", None)
-        if direct is None or sample.diffuse_albedo is None or sample.basecolor is None:
+        if direct is None or sample.diffuse_albedo is None:
             return None
 
         height, width = sample.camera.image_height, sample.camera.image_width
@@ -1055,10 +1055,8 @@ class GlintTrainer:
         )
         direct_depth = direct.surf_depth.permute(1, 2, 0).unsqueeze(0).detach()
         albedo = sample.diffuse_albedo.unsqueeze(0).mean(dim=-1, keepdim=True)
-        basecolor = sample.basecolor.unsqueeze(0).mean(dim=-1, keepdim=True)
         low_albedo = albedo < config.albedo_threshold
         high_albedo = albedo > config.albedo_threshold + 0.05
-        high_basecolor = basecolor > config.basecolor_threshold
         depth_exists = (interface_depth > 0.0) & (direct_depth > 0.0)
         (
             transparent_depth_confidence,
@@ -1075,8 +1073,8 @@ class GlintTrainer:
             not_sky = sample.sky_mask.unsqueeze(0) < 0.5
         sky = ~not_sky
 
-        transparent_material = low_albedo & high_basecolor & not_sky & depth_exists
-        material_opaque = high_albedo | (low_albedo & ~high_basecolor) | sky
+        transparent_material = low_albedo & not_sky & depth_exists
+        material_opaque = high_albedo | sky
         transparent_mask = (
             transparent_material.to(transparency.dtype)
             * transparent_depth_confidence

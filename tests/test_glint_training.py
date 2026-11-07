@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import pytest
 
 from glint.checkpoint import load_glint_checkpoint
 from glint.model import (
@@ -494,7 +495,8 @@ def test_geometry_only_freeze_keeps_interface_material_trainable() -> None:
         assert parameters[name].requires_grad
 
 
-def test_guidance_masks_are_reused_by_cleanup_with_finite_backward() -> None:
+@pytest.mark.parametrize("basecolor_value", [None, 0.0, 1.0])
+def test_guidance_masks_are_reused_by_cleanup_with_finite_backward(basecolor_value) -> None:
     height, width = 2, 3
     config = GlintLossConfig(
         transparency_mask_shrink=1,
@@ -527,7 +529,7 @@ def test_guidance_masks_are_reused_by_cleanup_with_finite_backward() -> None:
     sample = SimpleNamespace(
         camera=SimpleNamespace(image_height=height, image_width=width),
         diffuse_albedo=albedo,
-        basecolor=torch.ones(height, width, 3),
+        basecolor=(None if basecolor_value is None else torch.full((height, width, 3), basecolor_value)),
         sky_mask=None,
         depth=None,
     )
